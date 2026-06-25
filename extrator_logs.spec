@@ -88,7 +88,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,         # execução em background sem janela de console
-    icon='icon.ico' if __import__('os').path.exists('icon.ico') else None,
+    icon='icon.ico',
 )
 
 coll = COLLECT(

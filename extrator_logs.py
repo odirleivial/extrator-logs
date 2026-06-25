@@ -639,7 +639,7 @@ if __name__ == '__main__':
 
     logger.info("Abrindo janela da aplicação")
     janela = webview.create_window(
-        'Extrator de Logs',
+        'Backoffice Equipe QA',
         'http://localhost:5000',
         width=1366,
         height=860,

@@ -1,4 +1,4 @@
-#define AppName      "Extrator de Logs"
+#define AppName      "Backoffice Equipe QA"
 #define AppVersion   "1.0"
 #define AppPublisher "Equipe QA"
 #define AppExeName   "ExtratordeLogs.exe"
@@ -18,7 +18,7 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
 ; Ícone do instalador (opcional — coloque icon.ico na pasta do projeto)
-; SetupIconFile=icon.ico
+SetupIconFile=icon.ico
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName}
 
@@ -38,14 +38,15 @@ Name: "{app}"; Permissions: users-full
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; config.properties instalado ao lado do .exe (onlyifdoesntexist para não sobrescrever ao atualizar)
 Source: "config.properties"; DestDir: "{app}"; Flags: onlyifdoesntexist
+Source: "icon.ico";          DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; Menu Iniciar
-Name: "{group}\{#AppName}";       Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: startmenuicon; Flags: runminimized
+Name: "{group}\{#AppName}";       Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"; Tasks: startmenuicon
 Name: "{group}\Desinstalar";      Filename: "{uninstallexe}"
 
 ; Área de Trabalho
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; Flags: runminimized
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Run]
 ; Pergunta se deseja abrir a aplicação ao final da instalação
