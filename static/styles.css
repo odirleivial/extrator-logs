@@ -1,0 +1,135 @@
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 30px auto;
+    max-width: 900px;
+    background: #f7f9fc;
+    color: #333;
+}
+
+h2 {
+    border-bottom: 2px solid #4a90e2;
+    padding-bottom: 8px;
+    margin-bottom: 20px;
+}
+
+label {
+    font-weight: 600;
+    display: block;
+    margin-top: 20px;
+    margin-bottom: 6px;
+    color: #4a90e2;
+}
+
+        .tabs-container {
+            display: flex;
+            gap: 0;
+            margin-bottom: 0;
+            border-bottom: 2px solid #4a90e2;
+        }
+        .tab-button {
+            background-color: #c8ecb4;
+            border: none;
+            padding: 12px 25px;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #333;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+        }
+        .tab-button:hover {
+            background-color: #c8dcf0;
+        }
+        .tab-button.active {
+            background-color: #c8dcf0;
+            color: #4a90e2;
+            border-bottom-color: #4a90e2;
+        }
+        .tab-content {
+            display: none;
+            padding: 20px;
+            background-color: #fff;
+        }
+        .tab-content.active {
+            display: block;
+        }
+
+select, input[type="email"] {
+    width: 100%;
+    padding: 10px;
+    font-size: 1rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    box-sizing: border-box;
+    transition: border-color 0.3s ease-in-out;
+}
+
+select:focus, input[type="email"]:focus {
+    border-color: #4a90e2;
+    outline: none;
+}
+
+#logs {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+    max-width: 600px;
+    margin-top: 15px;
+}
+
+#logs label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: normal;
+    background-color: #f0f4f8;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#logs label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: normal;
+    background-color: #f0f4f8;
+    padding: 2px 6px;       /* Reduzido de 5px 10px para 2px 6px */
+    margin-bottom: 2px;     /* Adicionado margem inferior pequena para espaçamento */
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#logs input[type="checkbox"] {
+    transform: scale(1.1);
+    cursor: pointer;
+}
+
+button {
+    margin-top: 25px;
+    background-color: #4a90e2;
+    color: white;
+    border: none;
+    padding: 12px 25px;
+    font-size: 1rem;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+}
+
+button:hover {
+    background-color: #357abd;
+}
+
+a {
+    display: inline-block;
+    margin-top: 20px;
+    color: #4a90e2;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+a:hover {
+    text-decoration: underline;
+}

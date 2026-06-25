@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Exportar Dados Oracle</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        .filtros-container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f0f4f8;
+            border-radius: 5px;
+        }
+        .filtro-campo {
+            display: flex;
+            flex-direction: column;
+        }
+        .filtro-campo label {
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #4a90e2;
+        }
+        .filtro-campo select,
+        .filtro-campo input[type="text"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        
+        .opcoes-container {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+        }
+        
+        .opcoes-grupo {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .opcoes-grupo h4 {
+            margin: 0 0 10px 0;
+            color: #4a90e2;
+            font-size: 0.95rem;
+        }
+        
+        .radio-opcoes {
+            display: flex;
+            gap: 15px;
+        }
+        
+        .radio-opcoes label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 0;
+            font-weight: normal;
+            cursor: pointer;
+        }
+        
+        .radio-opcoes input[type="radio"] {
+            cursor: pointer;
+            margin: 0;
+        }
+        
+        .consultas-container {
+            border: 1px solid #ddd;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        
+        .consultas-container h3 {
+            margin-top: 0;
+            color: #4a90e2;
+        }
+        
+        #consultas-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+        }
+        
+        #consultas-list label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin: 0;
+        }
+        
+        #consultas-list label:hover {
+            background-color: #f0f4f8;
+            border-color: #4a90e2;
+        }
+        
+        #consultas-list input[type="checkbox"] {
+            cursor: pointer;
+            margin: 0;
+        }
+    </style>
+    <script>
+        var config = {{ config_props | tojson | safe }};
+
+        function converterParaArray(valor) {
+            if (typeof valor === 'string') {
+                return valor.split(',').map(v => v.trim()).filter(v => v);
+            }
+            return Array.isArray(valor) ? valor : [];
+        }
+
+        function formatarDataAtual() {
+            var hoje = new Date();
+            var dia = String(hoje.getDate()).padStart(2, '0');
+            var mes = String(hoje.getMonth() + 1).padStart(2, '0');
+            var ano = hoje.getFullYear();
+            return dia + '/' + mes + '/' + ano;
+        }
+
+        function populaLojas() {
+            var lojasSelect = document.getElementById("filtro_loja");
+            lojasSelect.innerHTML = '<option value="">-- Selecione uma loja --</option>';
+            
+            var lojas = converterParaArray(config['stores']);
+            lojas.forEach(function(loja) {
+                var opt = document.createElement("option");
+                opt.value = loja;
+                opt.innerHTML = loja;
+                lojasSelect.appendChild(opt);
+            });
+        }
+
+        function populaPdvs() {
+            var pdvSelect = document.getElementById("filtro_pdv");
+            var lojaSelecionada = document.getElementById("filtro_loja").value;
+            pdvSelect.innerHTML = '<option value="">-- Selecione um PDV --</option>';
+            
+            if (!lojaSelecionada) {
+                return;
+            }
+            
+            var pdvs = converterParaArray(config[lojaSelecionada + "_pdvs"]);
+            pdvs.forEach(function(pdv) {
+                var opt = document.createElement("option");
+                opt.value = pdv;
+                opt.innerHTML = pdv;
+                pdvSelect.appendChild(opt);
+            });
+        }
+
+        function populaConsultas() {
+            var consultasDiv = document.getElementById("consultas-list");
+            consultasDiv.innerHTML = '';
+            var nomes = converterParaArray(config['oracle_query_names']);
+            
+            nomes.forEach(function(nome) {
+                var label = document.createElement("label");
+                var checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.name = "consultas";
+                checkbox.value = nome;
+                label.appendChild(checkbox);
+                label.appendChild(document.createTextNode(nome));
+                consultasDiv.appendChild(label);
+            });
+        }
+
+        function exportarOracle() {
+            const loja = document.getElementById("filtro_loja").value;
+            const pdv = document.getElementById("filtro_pdv").value;
+            const nsu = document.getElementById("filtro_nsu").value;
+            const data = document.getElementById("filtro_data").value;
+            
+            // Obter formato de arquivo
+            const formato = document.querySelector('input[name="formato"]:checked').value;
+            
+            // Obter separador decimal
+            const separador = document.querySelector('input[name="separador"]:checked').value;
+            
+            // Obter consultas selecionadas
+            const checkboxes = document.querySelectorAll('input[name="consultas"]:checked');
+            const consultas = Array.from(checkboxes).map(cb => cb.value);
+            
+            console.log("Consultas selecionadas:", consultas);
+            console.log("Formato:", formato);
+            console.log("Separador decimal:", separador);
+            
+            if (consultas.length === 0) {
+                alert('Selecione pelo menos uma consulta.');
+                return;
+            }
+            
+            const body = 'consultas=' + encodeURIComponent(consultas.join(',')) + 
+                         '&loja=' + encodeURIComponent(loja) +
+                         '&pdv=' + encodeURIComponent(pdv) +
+                         '&nsu=' + encodeURIComponent(nsu) +
+                         '&data=' + encodeURIComponent(data) +
+                         '&formato=' + encodeURIComponent(formato) +
+                         '&separador=' + encodeURIComponent(separador);
+            
+            console.log("Body sendo enviado:", body);
+            
+            fetch('/oracle_export', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: body
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.sucesso) {
+                    alert('Arquivo gerado com sucesso em: ' + d.caminho);
+                } else {
+                    alert('Erro: ' + d.mensagem);
+                }
+            })
+            .catch(e => {
+                console.error("Erro:", e);
+                alert('Erro: ' + e);
+            });
+        }
+
+        document.addEventListener("DOMContentLoaded", function() {
+            document.getElementById("filtro_data").value = formatarDataAtual();
+            populaLojas();
+            populaPdvs();
+            populaConsultas();
+            
+            document.getElementById("filtro_loja").addEventListener("change", function() {
+                populaPdvs();
+            });
+        });
+    </script>
+</head>
+<body>
+    <h2>Exportar Dados Oracle</h2>
+    
+    <!-- Filtros -->
+    <div class="filtros-container">
+        <div class="filtro-campo">
+            <label for="filtro_loja">Loja:</label>
+            <select id="filtro_loja"></select>
+        </div>
+        <div class="filtro-campo">
+            <label for="filtro_pdv">PDV:</label>
+            <select id="filtro_pdv"></select>
+        </div>
+        <div class="filtro-campo">
+            <label for="filtro_nsu">NSU:</label>
+            <input type="text" id="filtro_nsu" name="filtro_nsu" placeholder="Digite o NSU (opcional)">
+        </div>
+        <div class="filtro-campo">
+            <label for="filtro_data">Data:</label>
+            <input type="text" id="filtro_data" name="filtro_data" placeholder="DD/MM/YYYY">
+        </div>
+    </div>
+
+    <!-- Opções de Formato e Separador -->
+    <div class="opcoes-container">
+        <div class="opcoes-grupo">
+            <h4>Formato de Arquivo:</h4>
+            <div class="radio-opcoes">
+                <label>
+                    <input type="radio" name="formato" value="csv" checked>
+                    CSV
+                </label>
+                <label>
+                    <input type="radio" name="formato" value="xlsx">
+                    XLSX
+                </label>
+            </div>
+        </div>
+        
+        <div class="opcoes-grupo">
+            <h4>Separador Decimal:</h4>
+            <div class="radio-opcoes">
+                <label>
+                    <input type="radio" name="separador" value="." checked>
+                    Ponto (.)
+                </label>
+                <label>
+                    <input type="radio" name="separador" value=",">
+                    Vírgula (,)
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <!-- Seleção de Consultas -->
+    <div class="consultas-container">
+        <h3>Consultas Disponíveis:</h3>
+        <div id="consultas-list"></div>
+    </div>
+
+    <!-- Botão Exportar -->
+    <button type="button" onclick="exportarOracle()" style="margin-bottom: 20px;">Exportar</button>
+</body>
+</html>

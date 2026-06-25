@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Configurações</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        .cfg-nav {
+            display: flex;
+            gap: 4px;
+            border-bottom: 2px solid #4a90e2;
+            margin-bottom: 20px;
+        }
+        .cfg-tab {
+            background: #e8f0fe;
+            border: none;
+            padding: 10px 22px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #555;
+            cursor: pointer;
+            border-radius: 4px 4px 0 0;
+            margin-top: 0;
+            transition: background 0.2s;
+        }
+        .cfg-tab:hover { background: #c8dcf0; color: #4a90e2; }
+        .cfg-tab.active { background: #4a90e2; color: #fff; }
+
+        .cfg-section { display: none; }
+        .cfg-section.active { display: block; }
+
+        .card {
+            background: #fff;
+            border: 1px solid #dde3ed;
+            border-radius: 6px;
+            padding: 18px 20px;
+            margin-bottom: 18px;
+        }
+        .card h4 {
+            margin: 0 0 14px 0;
+            color: #4a90e2;
+            font-size: 1rem;
+            border-bottom: 1px solid #eef1f6;
+            padding-bottom: 8px;
+        }
+
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+        input[type="text"], input[type="password"], textarea, select {
+            width: 100%;
+            padding: 8px 10px;
+            font-size: 0.92rem;
+            border: 1px solid #cdd4df;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-family: inherit;
+            background: #fafbfc;
+        }
+        input[type="text"]:focus, input[type="password"]:focus,
+        textarea:focus, select:focus {
+            border-color: #4a90e2;
+            outline: none;
+            background: #fff;
+        }
+        textarea { font-family: monospace; resize: vertical; }
+
+        label {
+            font-weight: 600;
+            display: block;
+            margin-top: 12px;
+            margin-bottom: 4px;
+            color: #444;
+            font-size: 0.88rem;
+        }
+        label:first-child { margin-top: 0; }
+
+        .field-group { margin-bottom: 10px; }
+        .field-group label { margin-top: 0; margin-bottom: 4px; }
+
+        .tab-toggle-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 8px;
+        }
+        .tab-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #f0f4f8;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #444;
+            cursor: pointer;
+        }
+        .tab-toggle input[type="checkbox"] {
+            width: auto;
+            transform: scale(1.2);
+            cursor: pointer;
+        }
+
+        .consulta-bloco {
+            border: 1px solid #dde3ed;
+            border-radius: 5px;
+            padding: 14px;
+            margin-bottom: 12px;
+            background: #f9fafc;
+        }
+        .consulta-bloco h5 {
+            margin: 0 0 8px 0;
+            color: #4a90e2;
+            font-size: 0.92rem;
+        }
+
+        .api-bloco {
+            border: 1px solid #dde3ed;
+            border-radius: 5px;
+            padding: 14px;
+            margin-bottom: 12px;
+            background: #f9fafc;
+        }
+        .api-bloco h5 {
+            margin: 0 0 8px 0;
+            color: #4a90e2;
+            font-size: 0.92rem;
+        }
+
+        .btn-danger {
+            background: #e74c3c;
+            color: #fff;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            margin-top: 8px;
+        }
+        .btn-danger:hover { background: #c0392b; }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: #fff;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            margin-top: 0;
+        }
+        .btn-secondary:hover { background: #545b62; }
+
+        .btn-add {
+            background: #27ae60;
+            color: #fff;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            margin-top: 8px;
+        }
+        .btn-add:hover { background: #219150; }
+
+        .actions-bar {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 16px 0 4px 0;
+            border-top: 2px solid #e0e7f0;
+            margin-top: 10px;
+        }
+        .actions-bar button[type="submit"] { margin-top: 0; }
+
+        .pdvs-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 10px;
+        }
+        .pdv-item label { margin-top: 0; }
+
+        small { color: #888; font-size: 0.78rem; display: block; margin-top: 2px; }
+    </style>
+
+    <script>
+        var config = {{ config_props | tojson | safe }};
+
+        function abrirSecao(evento, id) {
+            document.querySelectorAll('.cfg-section').forEach(s => s.classList.remove('active'));
+            document.querySelectorAll('.cfg-tab').forEach(b => b.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+            evento.currentTarget.classList.add('active');
+        }
+
+        function converterParaArray(valor) {
+            if (typeof valor === 'string') return valor.split(',').map(v => v.trim()).filter(v => v);
+            return Array.isArray(valor) ? valor : [];
+        }
+
+        // ===== Oracle: consultas =====
+        function carregarConsultas() {
+            const container = document.getElementById('consultas-container');
+            container.innerHTML = '';
+            converterParaArray(config['oracle_query_names']).forEach(nome => {
+                const sql = config['oracle_query.' + nome] || '';
+                const div = document.createElement('div');
+                div.className = 'consulta-bloco';
+                div.innerHTML = `
+                    <h5>Consulta: ${nome}</h5>
+                    <label>SQL:</label>
+                    <textarea name="oracle_query_sql_${nome}" rows="5">${sql}</textarea>
+                    <button type="button" class="btn-danger" onclick="removerConsulta('${nome}')">Remover</button>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        function removerConsulta(nome) {
+            if (!confirm('Remover a consulta "' + nome + '"?')) return;
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'remover_consulta';
+            input.value = nome;
+            document.getElementById('config_form').appendChild(input);
+            document.getElementById('config_form').submit();
+        }
+
+        // ===== APIs =====
+        function adicionarApi() {
+            const container = document.getElementById('apis-container');
+            const idx = container.querySelectorAll('.api-bloco').length;
+            const div = document.createElement('div');
+            div.className = 'api-bloco';
+            div.innerHTML = blocoApiHtml(idx, {});
+            container.appendChild(div);
+            reindexarApis();
+        }
+
+        function removerApi(botao) {
+            botao.closest('.api-bloco').remove();
+            reindexarApis();
+        }
+
+        function reindexarApis() {
+            document.querySelectorAll('#apis-container .api-bloco').forEach((bloco, idx) => {
+                bloco.querySelectorAll('input, select').forEach(el => {
+                    el.name = el.name.replace(/_\d+$/, '_' + idx);
+                });
+            });
+        }
+
+        function blocoApiHtml(idx, api) {
+            const metodos = ['GET','POST','PUT','PATCH','DELETE'];
+            const opcoesMetodo = metodos.map(m =>
+                `<option value="${m}" ${(api.method || 'POST') === m ? 'selected' : ''}>${m}</option>`
+            ).join('');
+            return `
+                <h5>API ${idx + 1}</h5>
+                <div class="grid-2">
+                    <div class="field-group">
+                        <label>Nome</label>
+                        <input type="text" name="api_nome_${idx}" value="${api.nome || ''}" placeholder="Ex: Minha_API" />
+                    </div>
+                    <div class="field-group">
+                        <label>Método</label>
+                        <select name="api_method_${idx}">${opcoesMetodo}</select>
+                    </div>
+                </div>
+                <div class="field-group">
+                    <label>URL</label>
+                    <input type="text" name="api_url_${idx}" value="${api.url || ''}" placeholder="https://..." />
+                </div>
+                <div class="field-group">
+                    <label>Parâmetros de URL</label>
+                    <input type="text" name="api_params_${idx}" value="${api.params || ''}" placeholder="Ex: /id=123" />
+                </div>
+                <div class="grid-2">
+                    <div class="field-group">
+                        <label>Header</label>
+                        <input type="text" name="api_header_${idx}" value="${api.header || ''}" placeholder="Chave=Valor; Chave2=Valor2" />
+                    </div>
+                    <div class="field-group">
+                        <label>Token</label>
+                        <input type="text" name="api_token_${idx}" value="${api.token || ''}" />
+                    </div>
+                </div>
+                <button type="button" class="btn-danger" onclick="removerApi(this)">Remover API</button>
+            `;
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            carregarConsultas();
+            document.querySelector('.cfg-tab').click();
+        });
+    </script>
+</head>
+<body>
+    <h2>Configurações</h2>
+
+    <form id="config_form" method="post" action="/config">
+
+        <!-- Navegação interna -->
+        <div class="cfg-nav">
+            <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-geral')">Geral</button>
+            <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-oracle')">Oracle</button>
+            <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-apis')">APIs</button>
+        </div>
+
+        <!-- ======== SEÇÃO: GERAL ======== -->
+        <div id="sec-geral" class="cfg-section">
+
+            <!-- Abas visíveis -->
+            <div class="card">
+                <h4>Abas visíveis na interface</h4>
+                <div class="tab-toggle-grid">
+                    {% set tab_labels = [
+                        ('solicitar_logs',  'Solicitar Logs'),
+                        ('exportar_oracle', 'Exportar Oracle'),
+                        ('requisicao_api',  'Requisição API'),
+                        ('configurar_pdv',  'Configurar PDV'),
+                        ('configuracoes',   'Configurações')
+                    ] %}
+                    {% for key, label in tab_labels %}
+                    <label class="tab-toggle">
+                        <input type="checkbox" name="tab_{{ key }}"
+                            {% if config_props.get('tab.' + key, 'true') == 'true' %}checked{% endif %}>
+                        {{ label }}
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- E-mails -->
+            <div class="card">
+                <h4>E-mails</h4>
+                <div class="grid-2">
+                    <div>
+                        <label>E-mail remetente (Gmail)</label>
+                        <input type="text" name="email_envio" value="{{ config_props.get('email_envio', '') }}">
+                        <label>Senha do remetente</label>
+                        <input type="password" name="senha_envio" value="{{ config_props.get('senha_envio', '') }}">
+                    </div>
+                    <div>
+                        <label>E-mails destino disponíveis</label>
+                        <small>Um e-mail por linha. O primeiro será o padrão no formulário.</small>
+                        <textarea name="emails_destino" rows="5">{{ emails_destino_lista }}</textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Lojas e PDVs -->
+            <div class="card">
+                <h4>Lojas e PDVs</h4>
+                <div class="field-group">
+                    <label>Lojas disponíveis</label>
+                    <small>Separadas por vírgula. Ex: 0019,0045,server_152</small>
+                    <input type="text" name="stores" value="{{ stores_str }}">
+                </div>
+                <label>PDVs por loja</label>
+                <div class="pdvs-grid">
+                    {% for loja in lojas %}
+                    <div class="pdv-item">
+                        <label>{{ loja }}</label>
+                        <input type="text" name="pdvs_{{ loja }}"
+                            value="{{ pdvs_dict.get(loja + '_pdvs', [])|join(',') }}"
+                            placeholder="PDVs separados por vírgula">
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Logs -->
+            <div class="card">
+                <h4>Logs disponíveis para solicitação</h4>
+                <small>Separados por vírgula.</small>
+                <input type="text" name="logs" value="{{ logs_str }}">
+            </div>
+
+            <!-- Parâmetros PDV -->
+            <div class="card">
+                <h4>Parâmetros de configuração de PDV</h4>
+                <small>Nomes dos arquivos de parâmetros, separados por vírgula.</small>
+                <input type="text" name="parametros_pdv"
+                    value="{{ config_props.get('PARAMETROS_PDV', '') }}">
+            </div>
+
+        </div><!-- /sec-geral -->
+
+        <!-- ======== SEÇÃO: ORACLE ======== -->
+        <div id="sec-oracle" class="cfg-section">
+
+            <!-- Conexão -->
+            <div class="card">
+                <h4>Conexão com o banco Oracle</h4>
+                <div class="grid-3">
+                    <div class="field-group">
+                        <label>Host</label>
+                        <input type="text" name="oracle_host" value="{{ config_props.get('oracle_host', '') }}">
+                    </div>
+                    <div class="field-group">
+                        <label>Porta</label>
+                        <input type="text" name="oracle_port" value="{{ config_props.get('oracle_port', '') }}">
+                    </div>
+                    <div class="field-group">
+                        <label>Service Name</label>
+                        <input type="text" name="oracle_service" value="{{ config_props.get('oracle_service', '') }}">
+                    </div>
+                </div>
+                <div class="grid-2">
+                    <div class="field-group">
+                        <label>Usuário</label>
+                        <input type="text" name="oracle_user" value="{{ config_props.get('oracle_user', '') }}">
+                    </div>
+                    <div class="field-group">
+                        <label>Senha</label>
+                        <input type="password" name="oracle_password" value="{{ config_props.get('oracle_password', '') }}">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Consultas -->
+            <div class="card">
+                <h4>Consultas SQL</h4>
+                <div id="consultas-container"></div>
+
+                <!-- Nova consulta -->
+                <div class="consulta-bloco" style="border-style: dashed; border-color: #4a90e2;">
+                    <h5>Nova consulta</h5>
+                    <div class="field-group">
+                        <label>Nome</label>
+                        <input type="text" name="oracle_query_name" placeholder="Ex: VENDAS_DIA">
+                    </div>
+                    <div class="field-group">
+                        <label>SQL</label>
+                        <textarea name="oracle_query_sql" rows="4" placeholder="SELECT * FROM ..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- /sec-oracle -->
+
+        <!-- ======== SEÇÃO: APIS ======== -->
+        <div id="sec-apis" class="cfg-section">
+            <div class="card">
+                <h4>APIs externas</h4>
+                <div id="apis-container">
+                    {% for api in apis %}
+                    <div class="api-bloco">
+                        <h5>API {{ loop.index }}</h5>
+                        <div class="grid-2">
+                            <div class="field-group">
+                                <label>Nome</label>
+                                <input type="text" name="api_nome_{{ loop.index0 }}" value="{{ api.nome }}">
+                            </div>
+                            <div class="field-group">
+                                <label>Método</label>
+                                <select name="api_method_{{ loop.index0 }}">
+                                    {% for m in ['GET','POST','PUT','PATCH','DELETE'] %}
+                                    <option value="{{ m }}" {% if api.get('method', 'POST') == m %}selected{% endif %}>{{ m }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="field-group">
+                            <label>URL</label>
+                            <input type="text" name="api_url_{{ loop.index0 }}" value="{{ api.url or '' }}">
+                        </div>
+                        <div class="field-group">
+                            <label>Parâmetros de URL</label>
+                            <input type="text" name="api_params_{{ loop.index0 }}" value="{{ api.params or '' }}" placeholder="Ex: /id=123">
+                        </div>
+                        <div class="grid-2">
+                            <div class="field-group">
+                                <label>Header</label>
+                                <input type="text" name="api_header_{{ loop.index0 }}" value="{{ api.header or '' }}" placeholder="Chave=Valor; Chave2=Valor2">
+                            </div>
+                            <div class="field-group">
+                                <label>Token</label>
+                                <input type="text" name="api_token_{{ loop.index0 }}" value="{{ api.token or '' }}">
+                            </div>
+                        </div>
+                        <button type="button" class="btn-danger" onclick="removerApi(this)">Remover API</button>
+                    </div>
+                    {% endfor %}
+                </div>
+                <button type="button" class="btn-add" onclick="adicionarApi()">+ Adicionar API</button>
+            </div>
+        </div><!-- /sec-apis -->
+
+        <!-- Barra de ações -->
+        <div class="actions-bar">
+            <button type="submit">Salvar configurações</button>
+            <button type="button" class="btn-secondary" onclick="window.location.href='/'">Cancelar</button>
+        </div>
+
+    </form>
+</body>
+</html>

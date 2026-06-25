@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>BEQ</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+
+    <script>
+        function abrirAba(evento, nomeDaAba) {
+            evento.preventDefault();
+
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
+
+            document.getElementById(nomeDaAba).classList.add('active');
+            evento.currentTarget.classList.add('active');
+        }
+
+        document.addEventListener("DOMContentLoaded", function() {
+            var primeiro = document.querySelector('.tab-button');
+            if (primeiro) primeiro.click();
+        });
+    </script>
+</head>
+<body>
+    <h1>Backoffice Equipe QA</h1>
+
+    <div class="tabs-container">
+        {% if tabs.solicitar_logs %}
+        <button class="tab-button" onclick="abrirAba(event, 'tab-solicitar-logs')">Solicitar Logs</button>
+        {% endif %}
+        {% if tabs.exportar_oracle %}
+        <button class="tab-button" onclick="abrirAba(event, 'tab-exportar-oracle')">Exportar Dados Oracle</button>
+        {% endif %}
+        {% if tabs.requisicao_api %}
+        <button class="tab-button" onclick="abrirAba(event, 'tab-requisicao-api')">Requisição API</button>
+        {% endif %}
+        {% if tabs.configurar_pdv %}
+        <button class="tab-button" onclick="abrirAba(event, 'tab-configurar-pdv')">Configurar PDV</button>
+        {% endif %}
+        {% if tabs.configuracoes %}
+        <button class="tab-button" onclick="abrirAba(event, 'tab-configuracao')">Configurações</button>
+        {% endif %}
+    </div>
+
+    {% if tabs.solicitar_logs %}
+    <div id="tab-solicitar-logs" class="tab-content">
+        <iframe src="/solicitar-logs" style="width: 100%; height: 600px; border: none; border-radius: 5px;"></iframe>
+    </div>
+    {% endif %}
+
+    {% if tabs.exportar_oracle %}
+    <div id="tab-exportar-oracle" class="tab-content">
+        <iframe src="/exportar-oracle" style="width: 100%; height: 600px; border: none; border-radius: 5px;"></iframe>
+    </div>
+    {% endif %}
+
+    {% if tabs.requisicao_api %}
+    <div id="tab-requisicao-api" class="tab-content">
+        <iframe src="/requisicao-api" style="width: 100%; height: 600px; border: none; border-radius: 5px;"></iframe>
+    </div>
+    {% endif %}
+
+    {% if tabs.configurar_pdv %}
+    <div id="tab-configurar-pdv" class="tab-content">
+        <iframe src="/configurar-pdv" style="width: 100%; height: 400px; border: none; border-radius: 5px;"></iframe>
+    </div>
+    {% endif %}
+
+    {% if tabs.configuracoes %}
+    <div id="tab-configuracao" class="tab-content">
+        <iframe src="/config" style="width: 100%; height: 800px; border: none; border-radius: 5px;"></iframe>
+    </div>
+    {% endif %}
+
+</body>
+</html>

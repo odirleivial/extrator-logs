@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Configurar PDV</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        .parametros-container {
+            margin-top: 15px;
+            padding: 12px;
+            background-color: #f0f4f8;
+            border-radius: 5px;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr)); /* 2 colunas */
+            gap: 8px 20px; /* espaço entre linhas e colunas */
+        }
+        .parametros-container label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: normal;
+            margin: 0;
+        }
+    </style>
+    <script>
+        var config = {{ config_props | tojson | safe }};
+
+        function converterParaArray(valor) {
+            if (typeof valor === 'string') {
+                return valor.split(',').map(v => v.trim()).filter(v => v);
+            }
+            return Array.isArray(valor) ? valor : [];
+        }
+
+        function populaLojas() {
+            var lojasSelect = document.getElementById("loja_pdv");
+            lojasSelect.innerHTML = "";
+            var lojas = converterParaArray(config['stores']);
+            lojas.forEach(function(loja) {
+                var opt = document.createElement("option");
+                opt.value = loja;
+                opt.innerHTML = loja;
+                lojasSelect.appendChild(opt);
+            });
+        }
+
+        function populaPdvs() {
+            var pdvSelect = document.getElementById("pdv_pdv");
+            var lojaSelecionada = document.getElementById("loja_pdv").value;
+            pdvSelect.innerHTML = "";
+            var pdvs = converterParaArray(config[lojaSelecionada + "_pdvs"]);
+            pdvs.forEach(function(pdv) {
+                var opt = document.createElement("option");
+                opt.value = pdv;
+                opt.innerHTML = pdv;
+                pdvSelect.appendChild(opt);
+            });
+        }
+
+        function populaParametros() {
+            var container = document.getElementById("parametros_container");
+            container.innerHTML = "";
+            var parametros = converterParaArray(
+                config['PARAMETROS_PDV'] || 'parametrosGeraisPDV.properties,ext.proparmperties,end_srv_mon'
+            );
+            parametros.forEach(function(par) {
+                var label = document.createElement("label");
+                var cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.name = "parametros";
+                cb.value = par;
+                label.appendChild(cb);
+                label.appendChild(document.createTextNode(par));
+                container.appendChild(label);
+            });
+        }
+
+        function enviarConfiguracaoPDV(e) {
+            e.preventDefault();
+            var loja = document.getElementById("loja_pdv").value;
+            var pdv = document.getElementById("pdv_pdv").value;
+            var cbs = document.querySelectorAll('input[name="parametros"]:checked');
+            var parametros = Array.from(cbs).map(cb => cb.value);
+
+            if (!loja || !pdv) {
+                alert("Selecione Loja e PDV.");
+                return;
+            }
+            if (parametros.length === 0) {
+                alert("Selecione pelo menos um parâmetro.");
+                return;
+            }
+
+            var body = "loja=" + encodeURIComponent(loja) +
+                       "&pdv=" + encodeURIComponent(pdv) +
+                       "&parametros=" + encodeURIComponent(parametros.join(','));
+
+            fetch("/enviar-config-pdv", {
+                method: "POST",
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                body: body
+            }).then(r => r.json())
+              .then(d => {
+                  if (d.sucesso) {
+                      alert(d.mensagem);
+                  } else {
+                      alert("Erro: " + d.mensagem);
+                  }
+              }).catch(err => alert("Erro na solicitação: " + err));
+        }
+
+        document.addEventListener("DOMContentLoaded", function() {
+            populaLojas();
+            populaPdvs();
+            populaParametros();
+            document.getElementById("loja_pdv").addEventListener("change", populaPdvs);
+            document.getElementById("form_pdv").addEventListener("submit", enviarConfiguracaoPDV);
+        });
+// ini
+        function abrirPopupVerificacao() {
+            document.getElementById("email_verificacao").value = "";
+            document.getElementById("popup_verificacao").style.display = "flex";
+        }
+
+        function fecharPopupVerificacao() {
+            document.getElementById("popup_verificacao").style.display = "none";
+        }
+
+        function confirmarVerificacao() {
+            const emailDestino = document.getElementById("email_verificacao").value.trim();
+            const loja = document.getElementById("loja_pdv").value || '0007';
+            const pdv = document.getElementById("pdv_pdv").value || '53';
+
+            if (!emailDestino) {
+                alert("Informe o e-mail de destino.");
+                return;
+            }
+
+            const body = "email_destino=" + encodeURIComponent(emailDestino) +
+                        "&loja=" + encodeURIComponent(loja) +
+                        "&pdv=" + encodeURIComponent(pdv);
+
+            fetch("/verificar-config-pdv", {
+                method: "POST",
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                body: body
+            }).then(r => r.json())
+            .then(d => {
+                if (d.sucesso) {
+                    alert(d.mensagem);
+                    fecharPopupVerificacao();
+                } else {
+                    alert("Erro: " + d.mensagem);
+                }
+            }).catch(err => {
+                alert("Erro na solicitação: " + err);
+            });
+        }
+//fin
+    </script>
+</head>
+
+<div id="popup_verificacao" style="
+    display:none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.4);
+    justify-content: center;
+    align-items: center;
+">
+    <div style="background: #fff; padding: 20px; border-radius: 6px; min-width: 320px;">
+        <h3>Verificar configuração</h3>
+        <label for="email_verificacao">E-mail destino:</label>
+        <input type="email" id="email_verificacao" style="width: 100%; padding: 8px; margin: 8px 0;">
+        <div style="text-align: right; margin-top: 10px;">
+            <button type="button" onclick="fecharPopupVerificacao()">Cancelar</button>
+            <button type="button" onclick="confirmarVerificacao()">OK</button>
+        </div>
+    </div>
+</div>
+
+<body>
+    <h2>Configurar PDV</h2>
+    <form id="form_pdv">
+        <label for="loja_pdv">Loja:</label>
+        <select id="loja_pdv" name="loja_pdv" required></select>
+
+        <label for="pdv_pdv">PDV:</label>
+        <select id="pdv_pdv" name="pdv_pdv" required></select>
+
+        <h3>Parâmetros</h3>
+        <div id="parametros_container" class="parametros-container"></div>
+
+        <button type="submit">Enviar Configuração</button>
+        <button type="button" onclick="abrirPopupVerificacao()">Verificar Parametrização</button>
+    </form>
+</body>
+</html>

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Requisição API</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        .api-form {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f0f4f8;
+            border-radius: 5px;
+        }
+        .api-form label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #4a90e2;
+        }
+        .api-form select,
+        .api-form textarea,
+        .api-form input,
+        .api-form button {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            box-sizing: border-box;
+        }
+        .api-form textarea {
+            min-height: 120px;
+            resize: vertical;
+        }
+        .api-form button {
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            width: 30%;
+        }
+        
+        .api-form button:hover {
+            background-color: #3a7bc8;
+        }
+        .retorno-container {
+            margin-top: 20px;
+        }
+        .retorno-container textarea {
+            min-height: 220px;
+        }
+    </style>
+    <script>
+        function formatarBodyRetorno(retorno) {
+            // retorno = { status_code, headers, body }
+            const headers = retorno.headers || {};
+            const body = retorno.body || '';
+            const contentType = (headers['Content-Type'] || headers['content-type'] || '').toLowerCase();
+
+            // JSON
+            if (contentType.includes('application/json')) {
+                try {
+                    const obj = JSON.parse(body);
+                    return JSON.stringify(obj, null, 2);
+                } catch (e) {
+                    // se não parsear, devolve como veio
+                    return body;
+                }
+            }
+
+            // XML
+            if (contentType.includes('application/xml') || contentType.includes('text/xml')) {
+                // tentativa simples de identar: quebra por ><
+                // aqui dá pra sofisticar com um parser, mas mantemos simples
+                return body;
+            }
+
+            // Texto "cru" (plain/text, html, etc.)
+            return body;
+        }
+
+        function fazerRequisicao() {
+            const api = document.getElementById('api').value;
+            const body = document.getElementById('body').value;
+
+            if (!api) {
+                alert('Selecione uma API.');
+                return;
+            }
+
+            const bodyData = new URLSearchParams();
+            bodyData.append('api', api);
+            bodyData.append('body', body);
+
+            fetch('/fazer-requisicao-api', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: bodyData
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.sucesso) {
+                    const retorno = d.retorno;
+                    // status_code em campo próprio
+                    document.getElementById('status_code').value = retorno.status_code ?? '';
+
+                    // corpo formatado conforme tipo
+                    const bodyFormatado = formatarBodyRetorno(retorno);
+                    document.getElementById('retorno').value = bodyFormatado;
+                } else {
+                    alert('Erro: ' + d.mensagem);
+                }
+            })
+            .catch(e => alert('Erro: ' + e));
+        }
+
+        function salvarRetorno() {
+            const retorno = document.getElementById('retorno').value.trim();
+            if (!retorno) {
+                alert('Nenhum retorno para salvar.');
+                return;
+            }
+
+            // aqui continuamos mandando o JSON completo do retorno se quiser,
+            // mas como agora só temos o body no textarea,
+            // a rota de salvar pode ser adaptada para salvar só texto também.
+            const bodyData = new URLSearchParams();
+            bodyData.append('retorno', retorno);
+
+            fetch('/salvar-retorno-api', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: bodyData
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.sucesso) {
+                    alert('Retorno salvo com sucesso em:\n' + d.caminho);
+                } else {
+                    alert('Erro: ' + d.mensagem);
+                }
+            })
+            .catch(e => alert('Erro: ' + e));
+        }
+    </script>
+</head>
+<body>
+    <h2>Requisição API</h2>
+
+    <div class="api-form">
+        <label for="api">API:</label>
+        <select id="api" name="api">
+            <option value="">-- Selecione uma API --</option>
+            {% for api in apis %}
+                <option value="{{ api.nome }}">{{ api.nome }}</option>
+            {% endfor %}
+        </select>
+        
+        <input type="text" id="url_params" name="url_params" placeholder="Ex: ?id=123&active=true" />
+
+        <label for="body">Body:</label>
+        <textarea id="body" name="body" placeholder="Corpo da requisição (JSON, XML, texto, etc)"></textarea>
+
+        <button type="button" onclick="fazerRequisicao()">Fazer Requisição</button>
+    </div>
+
+    <div class="api-form">
+        <label for="status_code">Status code:</label>
+        <input type="text" id="status_code" name="status_code" readonly />
+
+        <label for="retorno">Retorno (body):</label>
+        <textarea id="retorno" name="retorno" readonly placeholder="Body da resposta da API será exibido aqui"></textarea>
+
+        <br>
+        <button type="button" onclick="salvarRetorno()">Salvar Retorno</button>
+    </div>
+</body>
+</html>

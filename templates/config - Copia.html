@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Configuração - Lojas, PDVs e Logs</title>
+<style>
+    body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        margin: 30px auto;
+        max-width: 700px;
+        background: #f7f9fc;
+        color: #333;
+    }
+    h2 {
+        border-bottom: 2px solid #4a90e2;
+        padding-bottom: 8px;
+        margin-bottom: 20px;
+    }
+    label {
+        font-weight: 600;
+        display: block;
+        margin-top: 20px;
+        margin-bottom: 6px;
+        color: #4a90e2;
+    }
+    input[type="text"] {
+        width: 100%;
+        padding: 10px;
+        font-size: 1rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        box-sizing: border-box;
+        transition: border-color 0.3s ease-in-out;
+    }
+    input[type="text"]:focus {
+        border-color: #4a90e2;
+        outline: none;
+    }
+    button {
+        margin-top: 25px;
+        background-color: #4a90e2;
+        color: white;
+        border: none;
+        padding: 12px 25px;
+        font-size: 1rem;
+        border-radius: 5px;
+        cursor: pointer;
+        transition: background-color 0.3s ease;
+    }
+    button:hover {
+        background-color: #357abd;
+    }
+    a {
+        display: inline-block;
+        margin-top: 20px;
+        color: #4a90e2;
+        text-decoration: none;
+        font-weight: 600;
+    }
+    a:hover {
+        text-decoration: underline;
+    }
+</style>
+</head>
+<body>
+    <h2>Configuração de Lojas, PDVs e Arquivos de Logs</h2>
+    <form method="post" action="/config">
+        <label for="stores">Lojas (separadas por vírgula):</label>
+        <input type="text" id="stores" name="stores" value="{{ stores_str }}" placeholder="Ex: Loja1,Loja2">
+
+        {% for loja in lojas %}
+            <label for="{{ loja }}_pdvs">PDVs da {{ loja }} (separados por vírgula):</label>
+            <input type="text" id="{{ loja }}_pdvs" name="{{ loja }}_pdvs" value="{{ pdvs_dict[loja + '_pdvs']|join(',') if pdvs_dict[loja + '_pdvs'] else '' }}">
+        {% endfor %}
+
+        <label for="logs">Arquivos de Log (únicos para todas as lojas/PDVs):</label>
+        <input type="text" id="logs" name="logs" value="{{ logs_str }}" placeholder="Ex: log1.txt,app.log,error.log">
+
+        <h3>Consultas Oracle</h3>
+        <label for="oracle_query_name">Nome da consulta:</label>
+        <input type="text" id="oracle_query_name" name="oracle_query_name">
+
+        <label for="oracle_query_sql">SQL da consulta:</label>
+        <textarea id="oracle_query_sql" name="oracle_query_sql" rows="5"></textarea>
+
+        <br>
+        <button type="submit">Salvar configurações</button>
+    </form>
+
+    <a href="/">Voltar para Painel</a>
+</body>
+</html>

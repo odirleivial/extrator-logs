@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Solicitar Logs</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+    <script>
+        var config = {{ config_props | tojson | safe }};
+
+        function converterParaArray(valor) {
+            if (typeof valor === 'string') {
+                return valor.split(',').map(v => v.trim()).filter(v => v);
+            }
+            return Array.isArray(valor) ? valor : [];
+        }
+
+        function populaLojas() {
+            var lojasSelect = document.getElementById("loja");
+            lojasSelect.innerHTML = "";
+            var lojas = converterParaArray(config['stores']);
+            lojas.forEach(function(loja) {
+                var opt = document.createElement("option");
+                opt.value = loja;
+                opt.innerHTML = loja;
+                lojasSelect.appendChild(opt);
+            });
+        }
+
+        function populaPdvs() {
+            var pdvSelect = document.getElementById("pdv");
+            var lojaSelecionada = document.getElementById("loja").value;
+            pdvSelect.innerHTML = "";
+            var pdvs = converterParaArray(config[lojaSelecionada + "_pdvs"]);
+            pdvs.forEach(function(pdv) {
+                var opt = document.createElement("option");
+                opt.value = pdv;
+                opt.innerHTML = pdv;
+                pdvSelect.appendChild(opt);
+            });
+        }
+
+        function atualizaLogs() {
+            var logsDiv = document.getElementById("logs");
+            var logs = converterParaArray(config['logs']);
+            logsDiv.innerHTML = '';
+            logs.forEach(function(log) {
+                var label = document.createElement("label");
+                var checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.name = "logs";
+                checkbox.value = log;
+                label.appendChild(checkbox);
+                label.appendChild(document.createTextNode(log));
+                logsDiv.appendChild(label);
+            });
+        }
+
+        function limparCampos() {
+            document.getElementById("painel").reset();
+            atualizaLogs();
+            populaPdvs();
+        }
+
+        document.addEventListener("DOMContentLoaded", function() {
+            populaLojas();
+            populaPdvs();
+            atualizaLogs();
+            document.getElementById("loja").addEventListener("change", function() {
+                populaPdvs();
+            });
+        });
+
+        document.addEventListener("DOMContentLoaded", function() {
+            document.getElementById("painel").addEventListener("submit", function(e) {
+                e.preventDefault();
+                var form = e.target;
+                var formData = new FormData(form);
+
+                fetch(form.action, {
+                    method: 'POST',
+                    body: formData
+                }).then(response => response.json())
+                .then(data => {
+                    if (data.sucesso) {
+                        alert(data.mensagem);
+                        form.reset();
+                        atualizaLogs();
+                        populaPdvs();
+                    } else {
+                        alert("Erro: " + data.mensagem);
+                    }
+                })
+                .catch(err => alert("Erro na solicitação: " + err));
+            });
+        });
+    </script>
+</head>
+<body>
+    <h2>Solicitar Logs</h2>
+    <form id="painel" method="post" action="/solicitar">
+        <label for="loja">Loja:</label>
+        <select id="loja" name="loja" required></select>
+
+        <label for="pdv">PDV:</label>
+        <select id="pdv" name="pdv" required></select>
+
+        <label>Arquivos de Logs:</label>
+        <div id="logs"></div>
+
+        <label for="email_destino">E-mail destino:</label>
+        <select id="email_destino" name="email_destino" required>
+            {% set emails = config_props.get('emails_destino', '').split(',') %}
+            {% for email in emails %}
+                {% set email = email.strip() %}
+                {% if email %}
+                <option value="{{ email }}" {% if loop.first %}selected{% endif %}>{{ email }}</option>
+                {% endif %}
+            {% endfor %}
+        </select>
+
+        <button type="submit">Solicitar Logs</button>
+        <button type="button" onclick="limparCampos()">Limpa</button>
+    </form>
+</body>
+</html>

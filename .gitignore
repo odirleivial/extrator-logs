@@ -1,0 +1,12 @@
+# Build e distribuição
+build/
+dist/
+__pycache__/
+*.pyc
+
+# Logs e saídas geradas em runtime
+log/
+output/
+
+# Arquivos temporários
+*.tmp
