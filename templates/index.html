@@ -20,6 +20,12 @@
             var primeiro = document.querySelector('.tab-button');
             if (primeiro) primeiro.click();
         });
+
+        window.addEventListener('message', function(e) {
+            if (e.data === 'config-saved') {
+                location.reload();
+            }
+        });
     </script>
 </head>
 <body>

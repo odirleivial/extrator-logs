@@ -483,7 +483,7 @@ def config():
             idx += 1
 
         salvar_properties(CONFIG_FILE, props)
-        return redirect('/config')
+        return redirect('/config?saved=1')
 
     # GET – preparar dados
     lojas = converterParaArray(props.get('stores', ''))

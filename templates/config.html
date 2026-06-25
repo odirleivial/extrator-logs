@@ -292,6 +292,11 @@
         document.addEventListener('DOMContentLoaded', function() {
             carregarConsultas();
             document.querySelector('.cfg-tab').click();
+
+            // Após salvar, notifica o pai para recarregar a interface
+            if (new URLSearchParams(window.location.search).get('saved') === '1') {
+                window.parent.postMessage('config-saved', '*');
+            }
         });
     </script>
 </head>
