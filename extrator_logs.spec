@@ -51,6 +51,13 @@ a = Analysis(
         'zipfile',
         'logging',
         'logging.handlers',
+        # pywebview (janela nativa Windows com Edge WebView2)
+        'webview',
+        'webview.platforms',
+        'webview.platforms.winforms',
+        'webview.event',
+        'clr',
+        'clr_loader',
     ],
     hookspath=[],
     hooksconfig={},

@@ -18,6 +18,7 @@ REM ── 2. Instala / atualiza dependencias de build ────────�
 echo [1/4] Instalando dependencias de build...
 pip install pyinstaller --quiet
 pip install pyinstaller-hooks-contrib --quiet
+pip install pywebview --quiet
 
 REM ── 3. Limpa builds anteriores ──────────────────────────────
 echo [2/4] Limpando builds anteriores...

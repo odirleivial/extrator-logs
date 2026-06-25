@@ -35,10 +35,9 @@ if getattr(sys, 'frozen', False):
         _lg = logging.getLogger(_name)
         _lg.setLevel(logging.INFO)
         _lg.addHandler(_wz_handler)
-    # Silencia stdout/stderr (não há console em background)
-    _devnull = open(os.devnull, 'w')
-    sys.stdout = _devnull
-    sys.stderr = _devnull
+    # Redireciona stdout/stderr para o log (sem console visível)
+    sys.stdout = open(_LOG_PATH, 'a', encoding='utf-8')
+    sys.stderr = sys.stdout
 
 logger.info("Aplicação iniciada")
 
@@ -627,10 +626,26 @@ def enviar_email_gmail(remetente, senha, destinatario, assunto, corpo):
 
 if __name__ == '__main__':
     logger.info("Iniciando servidor Flask")
-    if getattr(sys, 'frozen', False):
-        import threading, time
-        def _abrir_browser():
-            time.sleep(1.5)
-            webbrowser.open('http://localhost:5000')
-        threading.Thread(target=_abrir_browser, daemon=True).start()
-    app.run(debug=False, port=5000)
+    import threading, time, webview
+
+    def _iniciar_flask():
+        app.run(debug=False, port=5000, use_reloader=False)
+
+    flask_thread = threading.Thread(target=_iniciar_flask, daemon=True)
+    flask_thread.start()
+
+    # Aguarda Flask ficar pronto
+    time.sleep(1.5)
+
+    logger.info("Abrindo janela da aplicação")
+    janela = webview.create_window(
+        'Extrator de Logs',
+        'http://localhost:5000',
+        width=1366,
+        height=860,
+        min_size=(900, 600),
+    )
+    webview.start()
+    # webview.start() bloqueia até a janela ser fechada — ao sair, o processo encerra
+    logger.info("Janela fechada — encerrando aplicação")
+    sys.exit(0)
