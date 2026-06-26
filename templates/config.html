@@ -308,8 +308,7 @@
         <!-- Navegação interna -->
         <div class="cfg-nav">
             <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-geral')">Geral</button>
-            <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-oracle')">Oracle</button>
-            <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-apis')">APIs</button>
+            <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-oracle')">Oracle — Consultas SQL</button>
         </div>
 
         <!-- ======== SEÇÃO: GERAL ======== -->
@@ -336,22 +335,11 @@
                 </div>
             </div>
 
-            <!-- E-mails -->
+            <!-- E-mails destino -->
             <div class="card">
-                <h4>E-mails</h4>
-                <div class="grid-2">
-                    <div>
-                        <label>E-mail remetente (Gmail)</label>
-                        <input type="text" name="email_envio" value="{{ config_props.get('email_envio', '') }}">
-                        <label>Senha do remetente</label>
-                        <input type="password" name="senha_envio" value="{{ config_props.get('senha_envio', '') }}">
-                    </div>
-                    <div>
-                        <label>E-mails destino disponíveis</label>
-                        <small>Um e-mail por linha. O primeiro será o padrão no formulário.</small>
-                        <textarea name="emails_destino" rows="5">{{ emails_destino_lista }}</textarea>
-                    </div>
-                </div>
+                <h4>E-mails destino disponíveis</h4>
+                <small>Um e-mail por linha. O primeiro será o padrão no formulário de solicitação.</small>
+                <textarea name="emails_destino" rows="5" style="margin-top:8px">{{ emails_destino_lista }}</textarea>
             </div>
 
             <!-- Lojas e PDVs -->
@@ -395,35 +383,6 @@
         <!-- ======== SEÇÃO: ORACLE ======== -->
         <div id="sec-oracle" class="cfg-section">
 
-            <!-- Conexão -->
-            <div class="card">
-                <h4>Conexão com o banco Oracle</h4>
-                <div class="grid-3">
-                    <div class="field-group">
-                        <label>Host</label>
-                        <input type="text" name="oracle_host" value="{{ config_props.get('oracle_host', '') }}">
-                    </div>
-                    <div class="field-group">
-                        <label>Porta</label>
-                        <input type="text" name="oracle_port" value="{{ config_props.get('oracle_port', '') }}">
-                    </div>
-                    <div class="field-group">
-                        <label>Service Name</label>
-                        <input type="text" name="oracle_service" value="{{ config_props.get('oracle_service', '') }}">
-                    </div>
-                </div>
-                <div class="grid-2">
-                    <div class="field-group">
-                        <label>Usuário</label>
-                        <input type="text" name="oracle_user" value="{{ config_props.get('oracle_user', '') }}">
-                    </div>
-                    <div class="field-group">
-                        <label>Senha</label>
-                        <input type="password" name="oracle_password" value="{{ config_props.get('oracle_password', '') }}">
-                    </div>
-                </div>
-            </div>
-
             <!-- Consultas -->
             <div class="card">
                 <h4>Consultas SQL</h4>
@@ -444,54 +403,6 @@
             </div>
 
         </div><!-- /sec-oracle -->
-
-        <!-- ======== SEÇÃO: APIS ======== -->
-        <div id="sec-apis" class="cfg-section">
-            <div class="card">
-                <h4>APIs externas</h4>
-                <div id="apis-container">
-                    {% for api in apis %}
-                    <div class="api-bloco">
-                        <h5>API {{ loop.index }}</h5>
-                        <div class="grid-2">
-                            <div class="field-group">
-                                <label>Nome</label>
-                                <input type="text" name="api_nome_{{ loop.index0 }}" value="{{ api.nome }}">
-                            </div>
-                            <div class="field-group">
-                                <label>Método</label>
-                                <select name="api_method_{{ loop.index0 }}">
-                                    {% for m in ['GET','POST','PUT','PATCH','DELETE'] %}
-                                    <option value="{{ m }}" {% if api.get('method', 'POST') == m %}selected{% endif %}>{{ m }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                        </div>
-                        <div class="field-group">
-                            <label>URL</label>
-                            <input type="text" name="api_url_{{ loop.index0 }}" value="{{ api.url or '' }}">
-                        </div>
-                        <div class="field-group">
-                            <label>Parâmetros de URL</label>
-                            <input type="text" name="api_params_{{ loop.index0 }}" value="{{ api.params or '' }}" placeholder="Ex: /id=123">
-                        </div>
-                        <div class="grid-2">
-                            <div class="field-group">
-                                <label>Header</label>
-                                <input type="text" name="api_header_{{ loop.index0 }}" value="{{ api.header or '' }}" placeholder="Chave=Valor; Chave2=Valor2">
-                            </div>
-                            <div class="field-group">
-                                <label>Token</label>
-                                <input type="text" name="api_token_{{ loop.index0 }}" value="{{ api.token or '' }}">
-                            </div>
-                        </div>
-                        <button type="button" class="btn-danger" onclick="removerApi(this)">Remover API</button>
-                    </div>
-                    {% endfor %}
-                </div>
-                <button type="button" class="btn-add" onclick="adicionarApi()">+ Adicionar API</button>
-            </div>
-        </div><!-- /sec-apis -->
 
         <!-- Barra de ações -->
         <div class="actions-bar">

@@ -7,9 +7,9 @@ a = Analysis(
     pathex=['.'],
     binaries=[],
     datas=[
-        ('templates',       'templates'),
-        ('static',          'static'),
-        ('agent.properties', '.'),
+        ('templates',              'templates'),
+        ('static',                 'static'),
+        ('properties/agent.properties', 'properties'),
     ],
     hiddenimports=[
         # Flask e dependências

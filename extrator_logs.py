@@ -20,7 +20,9 @@ app = Flask(__name__,
             template_folder=os.path.join(BUNDLE_DIR, 'templates'),
             static_folder=os.path.join(BUNDLE_DIR, 'static'))
 
-CONFIG_FILE = os.path.join(APP_DIR, 'config.properties')
+PROPS_DIR   = os.path.join(APP_DIR, 'properties')
+CONFIG_FILE = os.path.join(PROPS_DIR, 'config.properties')
+SECURE_FILE = os.path.join(PROPS_DIR, 'secure.properties')
 OUTPUT_DIR  = os.path.join(APP_DIR, 'output')
 
 # Redireciona werkzeug para o mesmo arquivo de log quando empacotado
@@ -60,6 +62,12 @@ def ler_properties(arquivo):
         logger.error(f"Erro ao ler arquivo {arquivo}: {str(e)}")
         return {}
 
+def ler_config_completo():
+    """Retorna config.properties + secure.properties mesclados (secure tem precedência)."""
+    props = ler_properties(CONFIG_FILE)
+    props.update(ler_properties(SECURE_FILE))
+    return props
+
 def get_oracle_conn(props):
     try:
         dsn = f"{props['oracle_host']}:{props['oracle_port']}/{props['oracle_service']}"
@@ -76,20 +84,16 @@ def get_oracle_conn(props):
 PROP_SECTIONS = [
     ("# === Abas - controla quais abas ficam visíveis na interface (true/false) ===",
      lambda k: k.startswith('tab.')),
-    ("# === E-mails - remetente do sistema e lista de destinatários disponíveis ===",
-     lambda k: k in ('emails_destino', 'email_envio', 'senha_envio')),
+    ("# === E-mails - lista de destinatários disponíveis ===",
+     lambda k: k == 'emails_destino'),
     ("# === Lojas e PDVs disponíveis para seleção ===",
      lambda k: k == 'stores' or k.endswith('_pdvs')),
     ("# === Logs disponíveis para solicitação ===",
      lambda k: k == 'logs'),
     ("# === Parâmetros de configuração de PDV ===",
      lambda k: k == 'PARAMETROS_PDV'),
-    ("# === Oracle - dados de conexão com o banco ===",
-     lambda k: k.startswith('oracle_') and not k.startswith('oracle_query')),
     ("# === Oracle - consultas SQL disponíveis ===",
      lambda k: k.startswith('oracle_query')),
-    ("# === APIs externas configuradas ===",
-     lambda k: k.startswith('api.')),
 ]
 
 def salvar_properties(arquivo, props):
@@ -145,7 +149,7 @@ def converter_data_para_oracle(data_ddmmyyyy):
         return data_ddmmyyyy
 
 def exportar_consulta_para_csv(nome_consulta, loja='', pdv='', nsu='', data='', formato='csv', separador='.'):
-    props = ler_properties(CONFIG_FILE)
+    props = ler_config_completo()
     sql = props.get(f'oracle_query.{nome_consulta}')
     if not sql:
         erro = f"Consulta '{nome_consulta}' não encontrada no config.properties"
@@ -353,7 +357,7 @@ def obter_apis_do_props(props):
 
 @app.route('/')
 def index():
-    props = ler_properties(CONFIG_FILE)
+    props = ler_properties(CONFIG_FILE)  # tabs só existem em config.properties
     tabs = {
         'solicitar_logs': props.get('tab.solicitar_logs', 'true').lower() == 'true',
         'exportar_oracle': props.get('tab.exportar_oracle', 'true').lower() == 'true',
@@ -366,38 +370,36 @@ def index():
 @app.route('/solicitar-logs')
 def solicitar_logs_page():
     logger.debug("Página 'Solicitar Logs' acessada")
-    props = ler_properties(CONFIG_FILE)
-    return render_template('solicitar_logs.html', config_props=props)
+    return render_template('solicitar_logs.html', config_props=ler_config_completo())
 
 @app.route('/exportar-oracle')
 def exportar_oracle_page():
     logger.debug("Página 'Exportar Dados Oracle' acessada")
-    props = ler_properties(CONFIG_FILE)
-    return render_template('exportar_oracle.html', config_props=props)
+    return render_template('exportar_oracle.html', config_props=ler_config_completo())
 
 @app.route('/configurar-pdv')
 def configurar_pdv_page():
-    return pagina_configurar_pdv(app, ler_properties, CONFIG_FILE)
+    return pagina_configurar_pdv(app, ler_config_completo, CONFIG_FILE)
 
 @app.route('/enviar-config-pdv', methods=['POST'])
 def enviar_config_pdv_route():
-    return enviar_configuracao_pdv(app, ler_properties, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+    return enviar_configuracao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
 
 @app.route('/verificar-config-pdv', methods=['POST'])
 def verificar_config_pdv_route():
-    return verificar_configuracao_pdv(app, ler_properties, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+    return verificar_configuracao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
 
 @app.route('/requisicao-api')
 def requisicao_api_page():
-    return pagina_requisicao_api(app, ler_properties, CONFIG_FILE)
+    return pagina_requisicao_api(app, ler_config_completo, CONFIG_FILE)
 
 @app.route('/fazer-requisicao-api', methods=['POST'])
 def fazer_requisicao_api_route():
-    return fazer_requisicao_api(app, ler_properties, CONFIG_FILE)
+    return fazer_requisicao_api(app, ler_config_completo, CONFIG_FILE)
 
 @app.route('/salvar-retorno-api', methods=['POST'])
 def salvar_retorno_route():
-    return salvar_retorno(app, ler_properties, CONFIG_FILE)
+    return salvar_retorno(app, ler_config_completo, CONFIG_FILE)
 
 
 def converterParaArray(valor):
@@ -407,18 +409,16 @@ def converterParaArray(valor):
 
 @app.route('/config', methods=['GET', 'POST'])
 def config():
-    props = ler_properties(CONFIG_FILE)
+    props = ler_properties(CONFIG_FILE)  # apenas props editáveis
 
     if request.method == 'POST':
         # Abas
         for tab in ['solicitar_logs', 'exportar_oracle', 'requisicao_api', 'configurar_pdv', 'configuracoes']:
             props[f'tab.{tab}'] = 'true' if request.form.get(f'tab_{tab}') else 'false'
 
-        # E-mails
+        # E-mails destino (lista de destinatários — não sensível)
         emails_raw = request.form.get('emails_destino', '').replace('\n', ',')
         props['emails_destino'] = ','.join(e.strip() for e in emails_raw.split(',') if e.strip())
-        props['email_envio']    = request.form.get('email_envio', props.get('email_envio', ''))
-        props['senha_envio']    = request.form.get('senha_envio', props.get('senha_envio', ''))
 
         # Lojas e PDVs
         stores_str = request.form.get('stores', props.get('stores', ''))
@@ -433,10 +433,6 @@ def config():
         parametros_pdv_str = request.form.get('parametros_pdv', '').strip()
         if parametros_pdv_str:
             props['PARAMETROS_PDV'] = parametros_pdv_str
-
-        # Oracle – conexão
-        for campo in ['oracle_host', 'oracle_port', 'oracle_service', 'oracle_user', 'oracle_password']:
-            props[campo] = request.form.get(campo, props.get(campo, ''))
 
         # Oracle – adicionar nova consulta
         nome_nova_consulta = request.form.get('oracle_query_name', '').strip()
@@ -461,31 +457,10 @@ def config():
             props['oracle_query_names'] = ','.join(n for n in nomes if n != remover)
             props.pop(f'oracle_query.{remover}', None)
 
-        # APIs – reconstruir do formulário
-        for k in [k for k in list(props.keys()) if k.startswith('api.')]:
-            del props[k]
-        idx = 0
-        while True:
-            if f'api_nome_{idx}' not in request.form and f'api_url_{idx}' not in request.form:
-                break
-            nome   = request.form.get(f'api_nome_{idx}', '').strip()
-            url    = request.form.get(f'api_url_{idx}', '').strip()
-            header = request.form.get(f'api_header_{idx}', '').strip()
-            token  = request.form.get(f'api_token_{idx}', '').strip()
-            method = (request.form.get(f'api_method_{idx}', '').strip() or 'POST').upper()
-            params = request.form.get(f'api_params_{idx}', '').strip()
-            if nome and url:
-                props[f'api.{nome}.url'] = url
-                if header: props[f'api.{nome}.header'] = header
-                if token:  props[f'api.{nome}.token']  = token
-                if method: props[f'api.{nome}.method'] = method
-                if params: props[f'api.{nome}.params'] = params
-            idx += 1
-
         salvar_properties(CONFIG_FILE, props)
         return redirect('/config?saved=1')
 
-    # GET – preparar dados
+    # GET – preparar dados (somente props editáveis para o formulário)
     lojas = converterParaArray(props.get('stores', ''))
     pdvs_dict = {f'{loja}_pdvs': converterParaArray(props.get(f'{loja}_pdvs', '')) for loja in lojas}
     emails_destino_lista = '\n'.join(e.strip() for e in props.get('emails_destino', '').split(',') if e.strip())
@@ -498,7 +473,6 @@ def config():
         logs_str=','.join(converterParaArray(props.get('logs', ''))),
         emails_destino_lista=emails_destino_lista,
         config_props=props,
-        apis=obter_apis_do_props(props)
     )
 
        
@@ -576,7 +550,7 @@ def gerar_pid(tamanho=10):
 @app.route('/solicitar', methods=['POST'])
 def solicitar():
     logger.info("Requisição de solicitação de logs recebida")
-    props = ler_properties(CONFIG_FILE)
+    props = ler_config_completo()
 
     loja = request.form['loja']
     pdv = request.form['pdv']

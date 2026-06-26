@@ -37,8 +37,11 @@ Name: "{app}"; Permissions: users-full
 ; Arquivos empacotados pelo PyInstaller
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; config.properties instalado ao lado do .exe (onlyifdoesntexist para não sobrescrever ao atualizar)
-Source: "config.properties"; DestDir: "{app}"; Flags: onlyifdoesntexist
-Source: "icon.ico";          DestDir: "{app}"; Flags: ignoreversion
+Source: "properties\config.properties";  DestDir: "{app}\properties"; Flags: onlyifdoesntexist
+Source: "properties\secure.properties"; DestDir: "{app}\properties"; Flags: onlyifdoesntexist
+Source: "properties\agent.properties";  DestDir: "{app}\properties"; Flags: ignoreversion
+Source: "properties\secure.properties.example"; DestDir: "{app}\properties"; Flags: ignoreversion
+Source: "icon.ico";                      DestDir: "{app}";            Flags: ignoreversion
 
 [Icons]
 ; Menu Iniciar

@@ -1,0 +1,21 @@
+# =============================================================================
+# EXEMPLO - copie este arquivo para secure.properties e preencha os valores
+# =============================================================================
+
+# === E-mail remetente ===
+email_envio=seu_email@gmail.com
+senha_envio=sua_senha_de_app
+
+# === Oracle - dados de conexão com o banco ===
+oracle_host=servidor.dominio.com
+oracle_port=1521
+oracle_service=NOME_SERVICE
+oracle_user=usuario
+oracle_password=senha
+
+# === APIs externas - URLs, tokens e chaves ===
+# api.NOME_API.url=https://...
+# api.NOME_API.header=Apikey=XXX; Accept=application/json
+# api.NOME_API.method=GET
+# api.NOME_API.params=/endpoint-opcional
+# api.NOME_API.token=bearer-token-opcional
