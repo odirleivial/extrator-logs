@@ -62,8 +62,9 @@ def ler_properties(arquivo):
         logger.error(f"Erro ao ler arquivo {arquivo}: {str(e)}")
         return {}
 
-def ler_config_completo():
-    """Retorna config.properties + secure.properties mesclados (secure tem precedência)."""
+def ler_config_completo(*args):
+    """Retorna config.properties + secure.properties mesclados (secure tem precedência).
+    Aceita argumentos opcionais para ser compatível com a assinatura de ler_properties."""
     props = ler_properties(CONFIG_FILE)
     props.update(ler_properties(SECURE_FILE))
     return props
