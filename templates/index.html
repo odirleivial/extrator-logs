@@ -1,17 +1,14 @@
 <!DOCTYPE html>
-<html>
+<html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <title>Backoffice Equipe QA</title>
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
-
     <script>
         function abrirAba(evento, nomeDaAba) {
             evento.preventDefault();
-
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
-
             document.getElementById(nomeDaAba).classList.add('active');
             evento.currentTarget.classList.add('active');
         }
@@ -22,62 +19,129 @@
         });
 
         window.addEventListener('message', function(e) {
-            if (e.data === 'config-saved') {
-                location.reload();
-            }
+            if (e.data === 'config-saved') location.reload();
         });
     </script>
 </head>
-<body>
-    <h1>Backoffice  —  Equipe QA</h1>
+<body class="layout-shell">
 
-    <div class="tabs-container">
+<div class="app-shell">
+
+    <!-- HEADER -->
+    <header class="app-header">
+        <div class="app-header-inner">
+            <div class="app-logo">
+                <span class="app-logo-icon">&#9881;</span>
+                <div>
+                    <div class="app-title">Backoffice</div>
+                    <div class="app-subtitle">Equipe QA</div>
+                </div>
+            </div>
+            <a href="#" class="btn-sobre" onclick="document.querySelector('.tab-sobre').click(); return false;">
+                &#9432; Sobre
+            </a>
+        </div>
+    </header>
+
+    <!-- NAV ABAS -->
+    <nav class="tabs-nav">
         {% if tabs.solicitar_logs %}
-        <button class="tab-button" onclick="abrirAba(event, 'tab-solicitar-logs')">Solicitar Logs</button>
+        <button class="tab-button" onclick="abrirAba(event, 'tab-solicitar-logs')">
+            <span class="tab-icon">&#128196;</span> Solicitar Logs
+        </button>
         {% endif %}
         {% if tabs.exportar_oracle %}
-        <button class="tab-button" onclick="abrirAba(event, 'tab-exportar-oracle')">Exportar Dados Oracle</button>
+        <button class="tab-button" onclick="abrirAba(event, 'tab-exportar-oracle')">
+            <span class="tab-icon">&#128196;</span> Exportar Oracle
+        </button>
         {% endif %}
         {% if tabs.requisicao_api %}
-        <button class="tab-button" onclick="abrirAba(event, 'tab-requisicao-api')">Requisição API</button>
+        <button class="tab-button" onclick="abrirAba(event, 'tab-requisicao-api')">
+            <span class="tab-icon">&#128279;</span> Requisição API
+        </button>
         {% endif %}
         {% if tabs.configurar_pdv %}
-        <button class="tab-button" onclick="abrirAba(event, 'tab-configurar-pdv')">Configurar PDV</button>
+        <button class="tab-button" onclick="abrirAba(event, 'tab-configurar-pdv')">
+            <span class="tab-icon">&#128421;</span> Manutenção PDV
+        </button>
+        {% endif %}
+        {% if tabs.pinpad %}
+        <button class="tab-button" onclick="abrirAba(event, 'tab-pinpad')">
+            <span class="tab-icon"><svg width="15" height="20" viewBox="0 0 30 40" fill="none" style="vertical-align:middle" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="28" height="38" rx="3" fill="rgba(255,255,255,0.18)" stroke="rgba(255,255,255,0.7)" stroke-width="1.5"/><rect x="3" y="3" width="24" height="11" rx="2" fill="rgba(128,222,234,0.8)"/><path d="M12 8 Q15 5.5 18 8 M10 11 Q15 6.5 20 11" stroke="white" stroke-width="1.2" stroke-linecap="round" fill="none"/><rect x="3.5" y="17" width="6" height="4.5" rx="1" fill="rgba(255,255,255,0.35)"/><rect x="12" y="17" width="6" height="4.5" rx="1" fill="rgba(255,255,255,0.35)"/><rect x="20.5" y="17" width="6" height="4.5" rx="1" fill="rgba(255,255,255,0.35)"/><rect x="3.5" y="23.5" width="6" height="4.5" rx="1" fill="rgba(255,255,255,0.35)"/><rect x="12" y="23.5" width="6" height="4.5" rx="1" fill="rgba(255,255,255,0.35)"/><rect x="20.5" y="23.5" width="6" height="4.5" rx="1" fill="rgba(255,255,255,0.35)"/><rect x="3.5" y="30" width="6" height="4.5" rx="1" fill="#ef5350"/><rect x="12" y="30" width="6" height="4.5" rx="1" fill="#fdd835"/><rect x="20.5" y="30" width="6" height="4.5" rx="1" fill="#66bb6a"/></svg></span> PinPad
+        </button>
+        {% endif %}
+        {% if tabs.mdm %}
+        <button class="tab-button" onclick="abrirAba(event, 'tab-mdm')">
+            <span class="tab-icon">&#128100;</span> MDM
+        </button>
         {% endif %}
         {% if tabs.configuracoes %}
-        <button class="tab-button" onclick="abrirAba(event, 'tab-configuracao')">Configurações</button>
+        <button class="tab-button" onclick="abrirAba(event, 'tab-configuracao')">
+            <span class="tab-icon">&#9881;</span> Configurações
+        </button>
         {% endif %}
-    </div>
+        <button class="tab-button tab-sobre" onclick="abrirAba(event, 'tab-sobre')">
+            <span class="tab-icon">&#9432;</span> Sobre
+        </button>
+    </nav>
 
-    {% if tabs.solicitar_logs %}
-    <div id="tab-solicitar-logs" class="tab-content">
-        <iframe src="/solicitar-logs" style="width: 100%; height: 600px; border: none; border-radius: 5px;"></iframe>
-    </div>
-    {% endif %}
+    <!-- CONTEÚDO DAS ABAS -->
+    <main class="app-main">
 
-    {% if tabs.exportar_oracle %}
-    <div id="tab-exportar-oracle" class="tab-content">
-        <iframe src="/exportar-oracle" style="width: 100%; height: 600px; border: none; border-radius: 5px;"></iframe>
-    </div>
-    {% endif %}
+        {% if tabs.solicitar_logs %}
+        <div id="tab-solicitar-logs" class="tab-content">
+            <iframe src="/solicitar-logs" class="tab-iframe"></iframe>
+        </div>
+        {% endif %}
 
-    {% if tabs.requisicao_api %}
-    <div id="tab-requisicao-api" class="tab-content">
-        <iframe src="/requisicao-api" style="width: 100%; height: 600px; border: none; border-radius: 5px;"></iframe>
-    </div>
-    {% endif %}
+        {% if tabs.exportar_oracle %}
+        <div id="tab-exportar-oracle" class="tab-content">
+            <iframe src="/exportar-oracle" class="tab-iframe"></iframe>
+        </div>
+        {% endif %}
 
-    {% if tabs.configurar_pdv %}
-    <div id="tab-configurar-pdv" class="tab-content">
-        <iframe src="/configurar-pdv" style="width: 100%; height: 400px; border: none; border-radius: 5px;"></iframe>
-    </div>
-    {% endif %}
+        {% if tabs.requisicao_api %}
+        <div id="tab-requisicao-api" class="tab-content">
+            <iframe src="/requisicao-api" class="tab-iframe"></iframe>
+        </div>
+        {% endif %}
 
-    {% if tabs.configuracoes %}
-    <div id="tab-configuracao" class="tab-content">
-        <iframe src="/config" style="width: 100%; height: 800px; border: none; border-radius: 5px;"></iframe>
-    </div>
-    {% endif %}
+        {% if tabs.configurar_pdv %}
+        <div id="tab-configurar-pdv" class="tab-content">
+            <iframe src="/configurar-pdv" class="tab-iframe tab-iframe-short"></iframe>
+        </div>
+        {% endif %}
+
+        {% if tabs.pinpad %}
+        <div id="tab-pinpad" class="tab-content">
+            <iframe src="/pinpad" class="tab-iframe"></iframe>
+        </div>
+        {% endif %}
+
+        {% if tabs.mdm %}
+        <div id="tab-mdm" class="tab-content">
+            <iframe src="/mdm" class="tab-iframe tab-iframe-tall"></iframe>
+        </div>
+        {% endif %}
+
+        {% if tabs.configuracoes %}
+        <div id="tab-configuracao" class="tab-content">
+            <iframe src="/config" class="tab-iframe tab-iframe-tall"></iframe>
+        </div>
+        {% endif %}
+
+        <div id="tab-sobre" class="tab-content">
+            <iframe src="/sobre" class="tab-iframe tab-iframe-tall"></iframe>
+        </div>
+
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="app-footer">
+        Backoffice Equipe QA &nbsp;|&nbsp; Agent Extrator Log &nbsp;|&nbsp; v{{ app_version }}
+    </footer>
+
+</div>
 
 </body>
 </html>

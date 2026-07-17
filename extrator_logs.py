@@ -1,11 +1,16 @@
-from flask import Flask, render_template, request, redirect, render_template_string, jsonify
-import os, sys, random, string, json, smtplib, webbrowser, zipfile, logging
+from flask import Flask, render_template, request, redirect, render_template_string, jsonify, send_from_directory, send_file, Blueprint
+from version import __version__
+import os, sys, random, string, json, smtplib, webbrowser, zipfile, logging, threading, uuid, mimetypes
 from email.mime.text import MIMEText
-import oracledb, csv
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import oracledb, csv, subprocess
 from datetime import datetime
 from logger import logger
-from parametrizacao_pdv import pagina_configurar_pdv, enviar_configuracao_pdv, verificar_configuracao_pdv
+from parametrizacao_pdv import pagina_configurar_pdv, enviar_configuracao_pdv, verificar_configuracao_pdv, relatorio_parametrizacao, versao_pdv, reiniciar_pdv, fechar_pdv
 from request_api import (pagina_requisicao_api,fazer_requisicao_api,salvar_retorno)
+from mdm import pagina_mdm, consultar_cliente_mdm, cadastrar_cliente_mdm
 
 # BUNDLE_DIR: recursos somente-leitura empacotados (templates, static)
 # APP_DIR:    pasta do .exe / pasta do script — para arquivos editáveis (config, output, log)
@@ -19,6 +24,11 @@ else:
 app = Flask(__name__,
             template_folder=os.path.join(BUNDLE_DIR, 'templates'),
             static_folder=os.path.join(BUNDLE_DIR, 'static'))
+
+_img_bp = Blueprint('img', __name__,
+                    static_folder=os.path.join(APP_DIR, 'img'),
+                    static_url_path='/img')
+app.register_blueprint(_img_bp)
 
 PROPS_DIR   = os.path.join(APP_DIR, 'properties')
 CONFIG_FILE = os.path.join(PROPS_DIR, 'config.properties')
@@ -42,6 +52,10 @@ if getattr(sys, 'frozen', False):
     sys.stderr = sys.stdout
 
 logger.info("Aplicação iniciada")
+
+@app.context_processor
+def inject_version():
+    return {'app_version': __version__}
 
 
 def ler_properties(arquivo):
@@ -87,6 +101,10 @@ PROP_SECTIONS = [
      lambda k: k.startswith('tab.')),
     ("# === E-mails - lista de destinatários disponíveis ===",
      lambda k: k == 'emails_destino'),
+    ("# === Modo de instalação e comunicação ===",
+     lambda k: k in ('modo_instalacao', 'bec_loja', 'bec_pdv',
+                     'pinpad_porta', 'pinpad_modo_comunicacao',
+                     'bec_tunnel_url', 'pinpad_tunnel_token', 'ignorar_lojas')),
     ("# === Lojas e PDVs disponíveis para seleção ===",
      lambda k: k == 'stores' or k.endswith('_pdvs')),
     ("# === Logs disponíveis para solicitação ===",
@@ -196,9 +214,9 @@ def exportar_consulta_para_csv(nome_consulta, loja='', pdv='', nsu='', data='', 
         linhas = len(dados)
         cur.close()
         conn.close()
-        
+
         logger.info(f"Exportação concluída: {caminho_arquivo} ({linhas} linhas)")
-        return caminho_arquivo
+        return caminho_arquivo, linhas
     except Exception as e:
         logger.error(f"Erro durante exportação de {nome_consulta}: {str(e)}")
         raise
@@ -364,6 +382,8 @@ def index():
         'exportar_oracle': props.get('tab.exportar_oracle', 'true').lower() == 'true',
         'requisicao_api': props.get('tab.requisicao_api', 'true').lower() == 'true',
         'configurar_pdv': props.get('tab.configurar_pdv', 'true').lower() == 'true',
+        'pinpad': props.get('tab.pinpad', 'true').lower() == 'true',
+        'mdm': props.get('tab.mdm', 'true').lower() == 'true',
         'configuracoes': props.get('tab.configuracoes', 'true').lower() == 'true',
     }
     return render_template('index.html', tabs=tabs)
@@ -390,6 +410,22 @@ def enviar_config_pdv_route():
 def verificar_config_pdv_route():
     return verificar_configuracao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
 
+@app.route('/relatorio-parametrizacao', methods=['POST'])
+def relatorio_parametrizacao_route():
+    return relatorio_parametrizacao(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+
+@app.route('/versao-pdv', methods=['POST'])
+def versao_pdv_route():
+    return versao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+
+@app.route('/reiniciar-pdv', methods=['POST'])
+def reiniciar_pdv_route():
+    return reiniciar_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+
+@app.route('/fechar-pdv', methods=['POST'])
+def fechar_pdv_route():
+    return fechar_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+
 @app.route('/requisicao-api')
 def requisicao_api_page():
     return pagina_requisicao_api(app, ler_config_completo, CONFIG_FILE)
@@ -401,6 +437,18 @@ def fazer_requisicao_api_route():
 @app.route('/salvar-retorno-api', methods=['POST'])
 def salvar_retorno_route():
     return salvar_retorno(app, ler_config_completo, CONFIG_FILE)
+
+@app.route('/mdm')
+def mdm_page():
+    return pagina_mdm(app, ler_config_completo, CONFIG_FILE)
+
+@app.route('/mdm-consultar', methods=['POST'])
+def mdm_consultar_route():
+    return consultar_cliente_mdm(app, ler_config_completo, CONFIG_FILE)
+
+@app.route('/mdm-cadastrar', methods=['POST'])
+def mdm_cadastrar_route():
+    return cadastrar_cliente_mdm(app, ler_config_completo, CONFIG_FILE)
 
 
 def converterParaArray(valor):
@@ -414,12 +462,25 @@ def config():
 
     if request.method == 'POST':
         # Abas
-        for tab in ['solicitar_logs', 'exportar_oracle', 'requisicao_api', 'configurar_pdv', 'configuracoes']:
+        for tab in ['solicitar_logs', 'exportar_oracle', 'requisicao_api', 'configurar_pdv', 'pinpad', 'mdm', 'configuracoes']:
             props[f'tab.{tab}'] = 'true' if request.form.get(f'tab_{tab}') else 'false'
 
         # E-mails destino (lista de destinatários — não sensível)
         emails_raw = request.form.get('emails_destino', '').replace('\n', ',')
         props['emails_destino'] = ','.join(e.strip() for e in emails_raw.split(',') if e.strip())
+
+        # Modo de instalação
+        props['modo_instalacao'] = request.form.get('modo_instalacao', 'pc')
+        props['bec_loja'] = request.form.get('bec_loja', '').strip()
+        props['bec_pdv']  = request.form.get('bec_pdv', '').strip()
+
+        # PinPad porta e modo de comunicação
+        pinpad_porta = request.form.get('pinpad_porta', '').strip()
+        if pinpad_porta:
+            props['pinpad_porta'] = pinpad_porta
+        props['pinpad_modo_comunicacao'] = request.form.get('pinpad_modo_comunicacao', 'email')
+        props['bec_tunnel_url']          = request.form.get('bec_tunnel_url', '').strip()
+        props['pinpad_tunnel_token']     = request.form.get('pinpad_tunnel_token', '').strip()
 
         # Lojas e PDVs
         stores_str = request.form.get('stores', props.get('stores', ''))
@@ -434,6 +495,11 @@ def config():
         parametros_pdv_str = request.form.get('parametros_pdv', '').strip()
         if parametros_pdv_str:
             props['PARAMETROS_PDV'] = parametros_pdv_str
+
+        # Lojas ignoradas (Relatório e Versão)
+        props['ignorar_lojas'] = ','.join(
+            l.strip() for l in request.form.get('ignorar_lojas', '').split(',') if l.strip()
+        )
 
         # Oracle – adicionar nova consulta
         nome_nova_consulta = request.form.get('oracle_query_name', '').strip()
@@ -478,70 +544,301 @@ def config():
 
        
 
-@app.route('/oracle_export', methods=['POST'])
-def oracle_export():
-    logger.info("Requisição de exportação Oracle recebida")
-    
-    logger.debug(f"Dados recebidos: {request.form}")
-    
-    consultas_str = request.form.get('consultas', '')
-    loja = request.form.get('loja', '')
-    pdv = request.form.get('pdv', '')
-    nsu = request.form.get('nsu', '')
-    data = request.form.get('data', '')
-    formato = request.form.get('formato', 'csv')
-    separador = request.form.get('separador', '.')
-    
-    logger.debug(f"consultas_str bruto: {repr(consultas_str)}")
-    
-    if not consultas_str:
-        erro = "Nenhuma consulta foi selecionada"
-        logger.error(erro)
-        return jsonify({'sucesso': False, 'mensagem': erro}), 400
-    
+def _parametros_oracle_export(form):
+    """Lê e valida os parâmetros comuns às ações de exportação Oracle (gerar/baixar/e-mail)."""
+    consultas_str = form.get('consultas', '')
     consultas = [c.strip() for c in consultas_str.split(',') if c.strip()]
-    
-    logger.debug(f"Consultas selecionadas: {consultas}")
-    logger.debug(f"Parâmetros: loja={loja}, pdv={pdv}, nsu={nsu}, data={data}, formato={formato}, separador={separador}")
-    
     if not consultas:
-        erro = "Lista de consultas vazia após processamento"
-        logger.error(erro)
-        return jsonify({'sucesso': False, 'mensagem': erro}), 400
-    
-    try:
-        caminhos_arquivos = []
-        
-        for nome_consulta in consultas:
+        raise ValueError("Nenhuma consulta foi selecionada")
+    return {
+        'consultas': consultas,
+        'loja': form.get('loja', ''),
+        'pdv': form.get('pdv', ''),
+        'nsu': form.get('nsu', ''),
+        'data': form.get('data', ''),
+        'formato': form.get('formato', 'csv'),
+        'separador': form.get('separador', '.'),
+        'compactar': form.get('compactar', 'sim').lower() == 'sim',
+    }
+
+
+def gerar_arquivos_oracle(consultas, loja, pdv, nsu, data, formato, separador, compactar):
+    """Gera os arquivos exportados do Oracle.
+
+    Consultas que não retornam linhas não geram arquivo para envio/download (o arquivo
+    vazio, só com cabeçalho, é descartado) — apenas aparecem no status com 0 linhas.
+
+    Retorna (caminhos_arquivos, status_consultas):
+      - caminhos_arquivos: lista de arquivos com dados prontos para anexar/baixar
+        (um único ZIP se compactar=True, ou os arquivos individuais caso contrário).
+        Vazia se nenhuma consulta retornou linhas.
+      - status_consultas: lista de dicts {'nome', 'linhas', 'status': 'ok'|'vazio'}
+        para todas as consultas selecionadas, usada para montar o relatório do e-mail.
+    """
+    status_consultas = []
+    caminhos_com_dados = []
+
+    for nome_consulta in consultas:
+        logger.info(f"Processando consulta: {nome_consulta}")
+        caminho, linhas = exportar_consulta_para_csv(nome_consulta, loja, pdv, nsu, data, formato, separador)
+        if linhas > 0:
+            status_consultas.append({'nome': nome_consulta, 'linhas': linhas, 'status': 'ok'})
+            caminhos_com_dados.append(caminho)
+        else:
+            status_consultas.append({'nome': nome_consulta, 'linhas': 0, 'status': 'vazio'})
+            logger.info(f"Consulta {nome_consulta} não retornou linhas; arquivo descartado")
             try:
-                logger.info(f"Processando consulta: {nome_consulta}")
-                caminho = exportar_consulta_para_csv(nome_consulta, loja, pdv, nsu, data, formato, separador)
-                caminhos_arquivos.append(caminho)
-            except Exception as e:
-                logger.error(f"Erro ao exportar {nome_consulta}: {str(e)}")
-                raise
-        
-        if not caminhos_arquivos:
-            raise ValueError("Nenhuma consulta foi exportada com sucesso")
-        
-        # Se apenas uma consulta, retornar diretamente (sem ZIP)
-        if len(caminhos_arquivos) == 1:
-            logger.info(f"Uma consulta exportada: {caminhos_arquivos[0]}")
-            return jsonify({'sucesso': True, 'caminho': caminhos_arquivos[0]})
-        
-        # Se múltiplas consultas, compactar em ZIP e remover originais
+                os.remove(caminho)
+            except OSError:
+                pass
+
+    if not caminhos_com_dados:
+        return [], status_consultas
+
+    if compactar:
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         ts = datetime.now().strftime('%Y%m%d%H%M%S')
         nome_zip = os.path.join(OUTPUT_DIR, f'OracleDB-{loja}-{pdv}-{ts}.zip')
-        
-        compactar_csvs(caminhos_arquivos, nome_zip)
-        logger.info(f"Exportação múltipla concluída: {nome_zip} ({len(caminhos_arquivos)} arquivos)")
-        
-        return jsonify({'sucesso': True, 'caminho': nome_zip})
+        compactar_csvs(caminhos_com_dados, nome_zip)
+        logger.info(f"Exportação compactada: {nome_zip} ({len(caminhos_com_dados)} arquivo(s))")
+        return [nome_zip], status_consultas
+
+    logger.info(f"Exportação concluída sem compactação ({len(caminhos_com_dados)} arquivo(s))")
+    return caminhos_com_dados, status_consultas
+
+
+@app.route('/oracle_export/gerar', methods=['POST'])
+def oracle_export_gerar():
+    """Gera os arquivos no servidor e retorna os nomes para download pelo navegador/webview."""
+    logger.info("Requisição de geração de exportação Oracle (download) recebida")
+    try:
+        params = _parametros_oracle_export(request.form)
+    except ValueError as e:
+        logger.error(str(e))
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 400
+
+    try:
+        caminhos, status_consultas = gerar_arquivos_oracle(**params)
+        if not caminhos:
+            logger.info("Nenhuma consulta retornou dados; nenhum arquivo gerado para download")
+            return jsonify({
+                'sucesso': True,
+                'arquivos': [],
+                'mensagem': 'Nenhuma consulta selecionada retornou dados. Nenhum arquivo foi gerado.'
+            })
+        return jsonify({'sucesso': True, 'arquivos': [os.path.basename(c) for c in caminhos]})
     except Exception as e:
         logger.error(f"Erro na exportação Oracle: {str(e)}")
         return jsonify({'sucesso': False, 'mensagem': str(e)}), 500
-    
+
+
+@app.route('/oracle_export/baixar/<nome_arquivo>')
+def oracle_export_baixar(nome_arquivo):
+    """Serve um arquivo já gerado em OUTPUT_DIR para download."""
+    nome_seguro = os.path.basename(nome_arquivo)
+    caminho = os.path.realpath(os.path.join(OUTPUT_DIR, nome_seguro))
+    if not caminho.startswith(os.path.realpath(OUTPUT_DIR) + os.sep) or not os.path.isfile(caminho):
+        logger.error(f"Tentativa de download de arquivo inválido: {nome_arquivo}")
+        return jsonify({'sucesso': False, 'mensagem': 'Arquivo não encontrado'}), 404
+
+    logger.info(f"Download do arquivo de exportação Oracle: {nome_seguro}")
+    return send_file(caminho, as_attachment=True, download_name=nome_seguro)
+
+
+@app.route('/oracle_export/email', methods=['POST'])
+def oracle_export_email():
+    logger.info("Requisição de envio por e-mail da exportação Oracle recebida")
+    email_destino = request.form.get('email_destino', '').strip()
+    if not email_destino:
+        return jsonify({'sucesso': False, 'mensagem': 'Selecione um e-mail de destino'}), 400
+
+    try:
+        params = _parametros_oracle_export(request.form)
+    except ValueError as e:
+        logger.error(str(e))
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 400
+
+    try:
+        caminhos, status_consultas = gerar_arquivos_oracle(**params)
+
+        props = ler_config_completo()
+        pid = gerar_pid()
+        corpo_txt, corpo_html = montar_email_exportacao_oracle(params, status_consultas, caminhos, pid)
+        assunto = f"[Exportação Oracle][{params['loja']}][{params['pdv']}][{pid}]"
+
+        enviar_email_com_anexos(
+            props.get('email_envio', ''), props.get('senha_envio', ''),
+            email_destino, assunto, corpo_txt, corpo_html, caminhos
+        )
+        logger.info(f"E-mail de exportação Oracle enviado para {email_destino} ({len(caminhos)} arquivo(s) anexado(s))")
+        return jsonify({'sucesso': True, 'mensagem': f'E-mail enviado com sucesso para {email_destino}!'})
+    except Exception as e:
+        logger.error(f"Erro ao enviar exportação Oracle por e-mail: {str(e)}")
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 500
+
+
+def enviar_email_com_anexos(remetente, senha, destino, assunto, corpo_texto, corpo_html, arquivos):
+    """Envia um e-mail com texto/HTML alternativos e um ou mais arquivos anexados."""
+    msg = MIMEMultipart('mixed')
+    msg['From'] = remetente
+    msg['To'] = destino
+    msg['Subject'] = assunto
+
+    alt = MIMEMultipart('alternative')
+    alt.attach(MIMEText(corpo_texto, 'plain', 'utf-8'))
+    alt.attach(MIMEText(corpo_html, 'html', 'utf-8'))
+    msg.attach(alt)
+
+    for caminho in arquivos:
+        tipo, _ = mimetypes.guess_type(caminho)
+        maintype, subtype = tipo.split('/', 1) if tipo else ('application', 'octet-stream')
+        with open(caminho, 'rb') as f:
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename="{os.path.basename(caminho)}"')
+        msg.attach(part)
+
+    with smtplib.SMTP('smtp.gmail.com', 587) as smtp:
+        smtp.starttls()
+        smtp.login(remetente, senha)
+        smtp.sendmail(remetente, destino, msg.as_string())
+
+
+def montar_email_exportacao_oracle(params, status_consultas, caminhos_arquivos, pid):
+    """Monta o corpo texto/HTML do e-mail de exportação Oracle, no mesmo layout visual
+    usado pelo agente ao enviar arquivos de log (server_agent/agent_extrator_log.py):
+    cabeçalho azul, caixas de resumo Loja/PDV/Data/PID, caixas verde/vermelha com a
+    contagem de consultas com dados x sem retorno, e tabela com o status de cada consulta.
+    Consultas sem linhas retornadas aparecem marcadas e não têm arquivo anexado."""
+    agora_fmt = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+
+    n_ok = sum(1 for s in status_consultas if s['status'] == 'ok')
+    n_vazio = len(status_consultas) - n_ok
+
+    linhas_html = ''
+    linhas_txt = ''
+    for s in status_consultas:
+        if s['status'] == 'ok':
+            bg_row = ''
+            badge = "<span style='background:#dcfce7;color:#1a7f4b;font-size:11px;font-weight:bold;padding:3px 10px;border-radius:12px;display:inline-block'>&#10004; Incluído</span>"
+        else:
+            bg_row = "background:#fff5f5;"
+            badge = "<span style='background:#fee2e2;color:#b91c1c;font-size:11px;font-weight:bold;padding:3px 10px;border-radius:12px;display:inline-block'>&#10006; Sem retorno</span>"
+
+        linhas_html += f"""
+        <tr style='{bg_row}'>
+          <td style='padding:10px 14px;border-bottom:1px solid #e5e7eb;font-family:monospace;font-size:12px;color:#1e293b'>{s['nome']}</td>
+          <td style='padding:10px 14px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;text-align:center'>{s['linhas']}</td>
+          <td style='padding:10px 14px;border-bottom:1px solid #e5e7eb;text-align:center;white-space:nowrap'>{badge}</td>
+        </tr>"""
+        st_txt = 'OK' if s['status'] == 'ok' else 'SEM RETORNO'
+        linhas_txt += f"\n  [{st_txt}] {s['nome']}  ({s['linhas']} linha(s))"
+
+    if caminhos_arquivos:
+        nomes_anexos = ', '.join(os.path.basename(c) for c in caminhos_arquivos)
+        anexo_html = f"""<div style='background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:12px 16px'>
+      <p style='margin:0;font-size:12px;color:#0369a1'><strong>Anexo:</strong> {nomes_anexos}</p>
+    </div>"""
+        anexo_txt = f"Anexo: {nomes_anexos}"
+    else:
+        anexo_html = """<div style='background:#fff5f5;border:1px solid #fecaca;border-radius:6px;padding:12px 16px'>
+      <p style='margin:0;font-size:12px;color:#b91c1c'><strong>Nenhum arquivo anexado</strong> — nenhuma consulta retornou dados.</p>
+    </div>"""
+        anexo_txt = "Nenhum arquivo anexado — nenhuma consulta retornou dados."
+
+    corpo_html = f"""<!DOCTYPE html>
+<html><head><meta charset='utf-8'></head>
+<body style='margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif'>
+<table width='100%' cellpadding='0' cellspacing='0' style='background:#f3f4f6;padding:24px 0'>
+<tr><td align='center'>
+<table width='640' cellpadding='0' cellspacing='0' style='background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)'>
+
+  <tr><td style='background:#1e3a5f;padding:24px 28px'>
+    <p style='margin:0;color:#93c5fd;font-size:12px;text-transform:uppercase;letter-spacing:1px'>Backoffice Equipe QA</p>
+    <h1 style='margin:6px 0 0;color:#ffffff;font-size:20px'>Exportação de Dados Oracle</h1>
+  </td></tr>
+
+  <tr><td style='padding:20px 28px 0'>
+    <table cellpadding='0' cellspacing='0' width='100%'>
+      <tr>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:22%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>Loja</p>
+          <p style='margin:4px 0 0;font-size:18px;font-weight:bold;color:#1e3a5f'>{params['loja'] or '-'}</p>
+        </td>
+        <td width='8'></td>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:18%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>PDV</p>
+          <p style='margin:4px 0 0;font-size:18px;font-weight:bold;color:#1e3a5f'>{params['pdv'] or '-'}</p>
+        </td>
+        <td width='8'></td>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:22%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>Data</p>
+          <p style='margin:4px 0 0;font-size:13px;font-weight:bold;color:#1e3a5f;font-family:monospace'>{params['data'] or '-'}</p>
+        </td>
+        <td width='8'></td>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:26%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>PID</p>
+          <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:#1e3a5f;font-family:monospace'>{pid}</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <tr><td style='padding:16px 28px'>
+    <table cellpadding='0' cellspacing='0' width='100%'>
+      <tr>
+        <td style='background:#dcfce7;border-radius:6px;padding:10px;text-align:center;width:48%'>
+          <p style='margin:0;font-size:22px;font-weight:bold;color:#1a7f4b'>{n_ok}</p>
+          <p style='margin:2px 0 0;font-size:11px;color:#1a7f4b;font-weight:bold'>COM DADOS</p>
+        </td>
+        <td width='12'></td>
+        <td style='background:#fee2e2;border-radius:6px;padding:10px;text-align:center;width:48%'>
+          <p style='margin:0;font-size:22px;font-weight:bold;color:#b91c1c'>{n_vazio}</p>
+          <p style='margin:2px 0 0;font-size:11px;color:#b91c1c;font-weight:bold'>SEM RETORNO</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <tr><td style='padding:0 28px 8px'>
+    <table width='100%' cellpadding='0' cellspacing='0' style='border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;font-size:13px'>
+      <thead>
+        <tr style='background:#f8fafc'>
+          <th style='padding:10px 14px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Consulta</th>
+          <th style='padding:10px 14px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Linhas</th>
+          <th style='padding:10px 14px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Status</th>
+        </tr>
+      </thead>
+      <tbody>{linhas_html}
+      </tbody>
+    </table>
+  </td></tr>
+
+  <tr><td style='padding:8px 28px 24px'>
+    {anexo_html}
+  </td></tr>
+
+  <tr><td style='padding:14px 28px;background:#f8fafc;border-top:1px solid #e5e7eb'>
+    <p style='margin:0;font-size:11px;color:#9ca3af'>Gerado em {agora_fmt} &nbsp;|&nbsp; Backoffice Equipe QA</p>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body></html>"""
+
+    corpo_txt = (
+        f"Exportação de Dados Oracle\n"
+        f"PID: {pid} | Loja: {params['loja']} | PDV: {params['pdv']} | Data: {params['data']}\n"
+        f"Resumo: {n_ok} com dados | {n_vazio} sem retorno\n"
+        f"{anexo_txt}\n"
+        f"{'=' * 60}"
+        + linhas_txt
+    )
+
+    return corpo_txt, corpo_html
+
 
 def gerar_pid(tamanho=10):
     caracteres = string.ascii_letters + string.digits
@@ -599,18 +896,174 @@ def enviar_email_gmail(remetente, senha, destinatario, assunto, corpo):
 
 
 
+@app.route('/api/versao')
+def api_versao():
+    return jsonify({'versao': __version__})
+
+
+IMG_DIR = os.path.abspath(os.path.join(APP_DIR, 'img'))
+
+PINPAD_PORTA_PADRAO = 'COM10'
+
+
+def _worker_call(method, url, data=None, token=''):
+    """Faz uma chamada HTTP simples ao Cloudflare Worker."""
+    import urllib.request as _req
+    import urllib.error   as _err
+    headers = {
+        'X-Token':    token,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept':     'application/json',
+    }
+    if data is not None:
+        body    = json.dumps(data).encode('utf-8')
+        headers['Content-Type'] = 'application/json'
+    else:
+        body = None
+    req = _req.Request(url, data=body, headers=headers, method=method)
+    try:
+        with _req.urlopen(req, timeout=10) as resp:
+            return resp.status, resp.read()
+    except _err.HTTPError as e:
+        return e.code, b''
+    except Exception as e:
+        logger.warning(f'[Worker] Erro HTTP {method} {url}: {e}')
+        return 0, b''
+
+
+@app.route('/pinpad')
+def pinpad_page():
+    props = ler_properties(CONFIG_FILE)
+    porta = props.get('pinpad_porta', PINPAD_PORTA_PADRAO)
+    return render_template('pinpad.html', porta=porta)
+
+def _executar_pinpad_direto(comando, porta):
+    """Executa o comando serial do robô PinPad diretamente via PowerShell."""
+    ps_script = (
+        f"$port=New-Object System.IO.Ports.SerialPort '{porta}',115200,None,8,one;"
+        f"try{{$port.Open();Start-Sleep -m 500;$port.WriteLine('{comando}');$port.Close();"
+        f"echo 'Comando [{comando}] enviado para {porta}'}}catch{{echo \"ERRO: $_\"}}"
+    )
+    sysroot = os.environ.get('SystemRoot', r'C:\Windows')
+    ps_exe = 'powershell.exe'
+    for sub in (r'SysNative\WindowsPowerShell\v1.0', r'System32\WindowsPowerShell\v1.0'):
+        candidato = os.path.join(sysroot, sub, 'powershell.exe')
+        if os.path.exists(candidato):
+            ps_exe = candidato
+            break
+    resultado = subprocess.run(
+        [ps_exe, '-NoProfile', '-NonInteractive', '-Command', ps_script],
+        capture_output=True, text=True, timeout=10
+    )
+    saida = (resultado.stdout or resultado.stderr or '').strip()
+    sucesso = 'ERRO' not in saida.upper() and resultado.returncode == 0
+    return sucesso, saida
+
+
+@app.route('/pinpad/comando', methods=['POST'])
+def pinpad_comando():
+    props   = ler_config_completo()
+    porta   = props.get('pinpad_porta', PINPAD_PORTA_PADRAO)
+    data    = request.get_json()
+    comando = data.get('comando', '').strip()
+
+    comandos_validos = {'senha', 'enter', 'limpa', 'cartao'}
+    if comando not in comandos_validos:
+        return jsonify({'sucesso': False, 'mensagem': f'Comando inválido: {comando}'}), 400
+
+    modo = props.get('modo_instalacao', 'pc')
+
+    if modo == 'pdv':
+        # Execução direta na máquina do PDV
+        try:
+            sucesso, saida = _executar_pinpad_direto(comando, porta)
+            logger.info(f"PinPad direto [{comando}] -> {porta}: {saida}")
+            mensagem = saida or f'Comando [{comando}] enviado para {porta}'
+            return jsonify({'sucesso': sucesso, 'mensagem': mensagem})
+        except subprocess.TimeoutExpired:
+            msg = f'Timeout ao enviar comando para {porta}'
+            logger.error(f'PinPad timeout: {msg}')
+            return jsonify({'sucesso': False, 'mensagem': msg}), 500
+        except Exception as e:
+            logger.error(f'PinPad erro direto: {str(e)}')
+            return jsonify({'sucesso': False, 'mensagem': str(e)}), 500
+    elif props.get('pinpad_modo_comunicacao', 'email') == 'tunnel':
+        # Comunicação via Cloudflare Workers relay — independente de máquina
+        loja       = props.get('bec_loja', '')
+        pdv_id     = props.get('bec_pdv', '')
+        worker_url = props.get('bec_tunnel_url', '').rstrip('/')
+        token      = props.get('pinpad_tunnel_token', '')
+
+        if not loja or not pdv_id:
+            return jsonify({'sucesso': False, 'mensagem': 'Configure Loja e PDV do BEC nas configurações (modo de comunicação).'}), 400
+        if not worker_url:
+            return jsonify({'sucesso': False, 'mensagem': 'URL do Worker não configurada. Acesse Configurações → Modo de comunicação.'}), 400
+
+        pid = gerar_pid()
+        cmd_data = {'pid': pid, 'comando': comando, 'porta': porta}
+        logger.info(f"[Worker] Enviando PinPad [{comando}] loja={loja} pdv={pdv_id} PID={pid}")
+
+        status, _ = _worker_call('POST', f'{worker_url}/comando/{loja}/{pdv_id}', cmd_data, token)
+        if status not in (200, 201):
+            logger.error(f"[Worker] Falha ao enviar comando: HTTP {status}")
+            return jsonify({'sucesso': False, 'mensagem': f'Erro ao enviar comando ao relay (HTTP {status}). Verifique a URL do Worker.'}), 500
+
+        logger.info(f"[Worker] Comando [{comando}] enviado ao relay. PID={pid}")
+        return jsonify({'sucesso': True, 'mensagem': f'Comando [{comando}] enviado! O dispositivo deve responder em instantes.'})
+    else:
+        # Envia email para o agente extrator executar remotamente
+        pid     = gerar_pid()
+        assunto = f"[PinPad] - [{pid}]"
+        corpo   = f"PID: {pid}\nComando: {comando}\nPorta: {porta}"
+        try:
+            remetente = props.get('email_envio', '')
+            enviar_email_gmail(remetente, props.get('senha_envio', ''), remetente, assunto, corpo)
+            logger.info(f"PinPad via email [{comando}] PID={pid}")
+            return jsonify({'sucesso': True, 'mensagem': f'Comando [{comando}] enviado! PID: {pid}'})
+        except Exception as e:
+            logger.error(f'PinPad erro ao enviar email: {str(e)}')
+            return jsonify({'sucesso': False, 'mensagem': f'Erro ao enviar solicitação: {str(e)}'}), 500
+
+
+@app.route('/sobre')
+def sobre():
+    md_path = os.path.join(APP_DIR, 'VERSAO_ATUAL_ARQUIVOS.md')
+    conteudo_md = ''
+    if os.path.exists(md_path):
+        with open(md_path, 'r', encoding='utf-8') as f:
+            conteudo_md = f.read()
+    return render_template('sobre.html', conteudo_md=conteudo_md)
+
+
+@app.route('/api/tunnel/status')
+def api_tunnel_status():
+    """Verifica se o Worker está acessível e configurado."""
+    props      = ler_config_completo()
+    worker_url = props.get('bec_tunnel_url', '').rstrip('/')
+    token      = props.get('pinpad_tunnel_token', '')
+    if not worker_url:
+        return jsonify({'ativo': False, 'url': '', 'erro': 'URL do Worker não configurada'})
+    status, _ = _worker_call('GET', f'{worker_url}/status', token=token)
+    if status == 200:
+        return jsonify({'ativo': True, 'url': worker_url, 'erro': ''})
+    return jsonify({'ativo': False, 'url': worker_url, 'erro': f'Worker inacessível (HTTP {status})'})
+
+
 if __name__ == '__main__':
     logger.info("Iniciando servidor Flask")
-    import threading, time, webview
+    import time, webview
 
     def _iniciar_flask():
-        app.run(debug=False, port=5000, use_reloader=False)
+        app.run(debug=False, port=5000, use_reloader=False, threaded=True)
 
     flask_thread = threading.Thread(target=_iniciar_flask, daemon=True)
     flask_thread.start()
 
-    # Aguarda Flask ficar pronto
     time.sleep(1.5)
+
+    # Downloads são desabilitados por padrão no pywebview; habilita para permitir
+    # que o botão "Download" salve arquivos na pasta Downloads do usuário.
+    webview.settings['ALLOW_DOWNLOADS'] = True
 
     logger.info("Abrindo janela da aplicação")
     janela = webview.create_window(
@@ -621,6 +1074,5 @@ if __name__ == '__main__':
         min_size=(900, 600),
     )
     webview.start()
-    # webview.start() bloqueia até a janela ser fechada — ao sair, o processo encerra
     logger.info("Janela fechada — encerrando aplicação")
     sys.exit(0)

@@ -70,9 +70,35 @@
             });
         });
 
+        function mostrarAlerta(mensagem, tipo) {
+            var alerta = document.getElementById("alerta");
+            alerta.textContent = mensagem;
+            alerta.className = "alerta alerta-" + tipo;
+            alerta.style.display = "block";
+            if (tipo === "sucesso") {
+                setTimeout(function() { alerta.style.display = "none"; }, 6000);
+            }
+        }
+
+        function ocultarAlerta() {
+            document.getElementById("alerta").style.display = "none";
+        }
+
+        document.addEventListener("focusin", function(e) {
+            if (e.target.matches("input, select, textarea")) ocultarAlerta();
+        });
+
         document.addEventListener("DOMContentLoaded", function() {
             document.getElementById("painel").addEventListener("submit", function(e) {
                 e.preventDefault();
+                ocultarAlerta();
+
+                var logsMarcados = document.querySelectorAll('#logs input[type="checkbox"]:checked');
+                if (logsMarcados.length === 0) {
+                    mostrarAlerta("Selecione ao menos um arquivo de log antes de solicitar.", "erro");
+                    return;
+                }
+
                 var form = e.target;
                 var formData = new FormData(form);
 
@@ -82,21 +108,22 @@
                 }).then(response => response.json())
                 .then(data => {
                     if (data.sucesso) {
-                        alert(data.mensagem);
+                        mostrarAlerta(data.mensagem, "sucesso");
                         form.reset();
                         atualizaLogs();
                         populaPdvs();
                     } else {
-                        alert("Erro: " + data.mensagem);
+                        mostrarAlerta("Erro: " + data.mensagem, "erro");
                     }
                 })
-                .catch(err => alert("Erro na solicitação: " + err));
+                .catch(err => mostrarAlerta("Erro na solicitação: " + err, "erro"));
             });
         });
     </script>
 </head>
 <body>
     <h2>Solicitar Logs</h2>
+    <div id="alerta" style="display:none;"></div>
     <form id="painel" method="post" action="/solicitar">
         <label for="loja">Loja:</label>
         <select id="loja" name="loja" required></select>

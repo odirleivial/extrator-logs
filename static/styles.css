@@ -1,12 +1,208 @@
+/* ============================================================
+   RESET / BASE
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    margin: 30px auto;
-    max-width: 900px;
-    background: #f7f9fc;
-    color: #333;
+    background: #f3f4f6;
+    color: #1e293b;
+    font-size: 14px;
+    margin: 0;
+}
+
+/* Apenas o index.html (janela principal) ocupa toda a tela sem scroll externo */
+body.layout-shell {
+    height: 100vh;
+    overflow: hidden;
+    background: #111e2e;   /* fundo lateral em monitores ultrawide */
+    display: flex;
+    justify-content: center;
+}
+
+/* ============================================================
+   SHELL — layout de tela cheia em janela própria
+   ============================================================ */
+.app-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100%;
+    max-width: 1400px;
+    background: #f3f4f6;
+}
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+.app-header {
+    background: #1e3a5f;
+    color: #fff;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,.25);
+}
+
+.app-header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 24px;
+}
+
+.app-logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.app-logo-icon {
+    font-size: 28px;
+    opacity: .9;
+}
+
+.app-title {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: .3px;
+    line-height: 1.1;
+}
+
+.app-subtitle {
+    font-size: 11px;
+    opacity: .65;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* ============================================================
+   NAV — abas horizontais
+   ============================================================ */
+.tabs-nav {
+    display: flex;
+    gap: 0;
+    background: #162d4a;
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.tabs-nav::-webkit-scrollbar { display: none; }
+
+.tab-button {
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    padding: 11px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(255,255,255,.6);
+    cursor: pointer;
+    transition: color .2s, border-color .2s, background .2s;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 0;
+    border-radius: 0;
+}
+
+.tab-button:hover {
+    background: rgba(255,255,255,.07);
+    color: rgba(255,255,255,.9);
+}
+
+.tab-button.active {
+    color: #fff;
+    border-bottom-color: #4a90e2;
+    background: rgba(255,255,255,.1);
+}
+
+.tab-icon {
+    font-size: 14px;
+    opacity: .85;
+}
+
+/* Aba "Sobre" levemente menor / diferenciada */
+.tab-sobre {
+    margin-left: auto;
+    font-weight: 500;
+    font-size: 12px;
+    opacity: .8;
+}
+
+/* ============================================================
+   MAIN — área de conteúdo
+   ============================================================ */
+.app-main {
+    flex: 1;
+    overflow: hidden;
+    background: #f3f4f6;
+    padding: 14px 16px;
+    box-sizing: border-box;
+}
+
+.tab-content {
+    display: none;
+    height: 100%;
+}
+
+.tab-content.active {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.tab-iframe {
+    width: 100%;
+    flex: 1;
+    border: none;
+    display: block;
+    border-radius: 8px;
+    background: #fff;
+    /* scroll é controlado pelo conteúdo interno do iframe */
+}
+
+/* A aba de configurações e sobre podem crescer além da tela — permite scroll no iframe */
+.tab-iframe-scroll {
+    overflow-y: auto;
+}
+
+/* ============================================================
+   FOOTER
+   ============================================================ */
+.app-footer {
+    background: #1e3a5f;
+    color: rgba(255,255,255,.45);
+    font-size: 11px;
+    text-align: center;
+    padding: 5px 0;
+    flex-shrink: 0;
+    letter-spacing: .3px;
+}
+
+/* ============================================================
+   CONTEÚDO INTERNO DAS SUB-PÁGINAS (iframes)
+   — usados em solicitar_logs.html, exportar_oracle.html, etc.
+   ============================================================ */
+
+/* Páginas internas não têm o shell, usam margin auto */
+.page-inner {
+    padding: 24px 32px;
+    max-width: 960px;
+    margin: 0 auto;
+}
+
+h1 {
+    font-size: 20px;
+    color: #1e3a5f;
+    border-bottom: 2px solid #4a90e2;
+    padding-bottom: 8px;
+    margin-bottom: 20px;
 }
 
 h2 {
+    font-size: 16px;
+    color: #1e3a5f;
     border-bottom: 2px solid #4a90e2;
     padding-bottom: 8px;
     margin-bottom: 20px;
@@ -17,119 +213,285 @@ label {
     display: block;
     margin-top: 20px;
     margin-bottom: 6px;
-    color: #4a90e2;
+    color: #1e3a5f;
 }
 
-        .tabs-container {
-            display: flex;
-            gap: 0;
-            margin-bottom: 0;
-            border-bottom: 2px solid #4a90e2;
-        }
-        .tab-button {
-            background-color: #c8ecb4;
-            border: none;
-            padding: 12px 25px;
-            font-size: 1rem;
-            font-weight: 600;
-            color: #333;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            border-bottom: 3px solid transparent;
-            margin-bottom: -2px;
-        }
-        .tab-button:hover {
-            background-color: #c8dcf0;
-        }
-        .tab-button.active {
-            background-color: #c8dcf0;
-            color: #4a90e2;
-            border-bottom-color: #4a90e2;
-        }
-        .tab-content {
-            display: none;
-            padding: 20px;
-            background-color: #fff;
-        }
-        .tab-content.active {
-            display: block;
-        }
-
-select, input[type="email"] {
+select,
+input[type="email"],
+input[type="text"],
+input[type="number"],
+textarea {
     width: 100%;
-    padding: 10px;
-    font-size: 1rem;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    box-sizing: border-box;
-    transition: border-color 0.3s ease-in-out;
+    padding: 9px 12px;
+    font-size: 14px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #fff;
+    color: #1e293b;
+    transition: border-color .2s, box-shadow .2s;
 }
 
-select:focus, input[type="email"]:focus {
+select:focus,
+input[type="email"]:focus,
+input[type="text"]:focus,
+input[type="number"]:focus,
+textarea:focus {
     border-color: #4a90e2;
+    box-shadow: 0 0 0 3px rgba(74,144,226,.15);
     outline: none;
 }
 
-#logs {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 10px;
-    max-width: 600px;
-    margin-top: 15px;
-}
-
-#logs label {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-weight: normal;
-    background-color: #f0f4f8;
-    padding: 5px 10px;
-    border-radius: 4px;
-    cursor: pointer;
-}
-
-#logs label {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-weight: normal;
-    background-color: #f0f4f8;
-    padding: 2px 6px;       /* Reduzido de 5px 10px para 2px 6px */
-    margin-bottom: 2px;     /* Adicionado margem inferior pequena para espaçamento */
-    border-radius: 4px;
-    cursor: pointer;
-}
-
-#logs input[type="checkbox"] {
-    transform: scale(1.1);
-    cursor: pointer;
-}
-
-button {
-    margin-top: 25px;
-    background-color: #4a90e2;
-    color: white;
+button,
+input[type="submit"] {
+    margin-top: 20px;
+    background: #1e3a5f;
+    color: #fff;
     border: none;
-    padding: 12px 25px;
-    font-size: 1rem;
-    border-radius: 5px;
+    padding: 10px 24px;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 6px;
     cursor: pointer;
-    transition: background-color 0.3s ease;
+    transition: background .2s;
 }
 
-button:hover {
-    background-color: #357abd;
+button:hover,
+input[type="submit"]:hover {
+    background: #2a5080;
+}
+
+/* Botão secundário */
+.btn-secondary {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.btn-secondary:hover {
+    background: #d1d5db;
 }
 
 a {
-    display: inline-block;
-    margin-top: 20px;
     color: #4a90e2;
     text-decoration: none;
     font-weight: 600;
 }
 
-a:hover {
-    text-decoration: underline;
+a:hover { text-decoration: underline; }
+
+/* Card de seção */
+.card {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    padding: 20px 24px;
+    margin-bottom: 20px;
+}
+
+/* Checkboxes de logs */
+#logs {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px;
+    max-width: 640px;
+    margin-top: 12px;
+}
+
+#logs label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: normal;
+    background: #f0f4f8;
+    padding: 4px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-top: 0;
+    color: #374151;
+    transition: background .15s;
+}
+
+#logs label:hover { background: #dbeafe; }
+
+#logs input[type="checkbox"] {
+    transform: scale(1.1);
+    cursor: pointer;
+    accent-color: #1e3a5f;
+}
+
+/* Alertas */
+.alert,
+.alerta {
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-top: 16px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.alert-success,
+.alerta-sucesso {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+}
+
+.alert-error,
+.alerta-erro {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
+/* Badges */
+.badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.badge-ok   { background: #dcfce7; color: #166534; }
+.badge-erro { background: #fee2e2; color: #991b1b; }
+
+/* Tabela simples */
+table.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+table.data-table th {
+    background: #f8fafc;
+    color: #6b7280;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    padding: 9px 14px;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+}
+
+table.data-table td {
+    padding: 9px 14px;
+    border-bottom: 1px solid #f1f5f9;
+    color: #374151;
+}
+
+table.data-table tr:last-child td { border-bottom: none; }
+
+/* ============================================================
+   PÁGINA SOBRE
+   ============================================================ */
+.sobre-container {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 28px 32px;
+}
+
+.sobre-header {
+    background: #1e3a5f;
+    color: #fff;
+    border-radius: 8px 8px 0 0;
+    padding: 20px 28px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.sobre-header-icon { font-size: 32px; }
+
+.sobre-header-title {
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.sobre-header-sub {
+    font-size: 12px;
+    opacity: .6;
+    margin-top: 2px;
+}
+
+.sobre-body {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    padding: 24px 28px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.07);
+}
+
+.sobre-body h1,
+.sobre-body h2,
+.sobre-body h3 {
+    border-bottom: none;
+    margin-bottom: 8px;
+    margin-top: 20px;
+    color: #1e3a5f;
+}
+
+.sobre-body h1 { font-size: 18px; }
+.sobre-body h2 { font-size: 15px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
+.sobre-body h3 { font-size: 13px; color: #4a90e2; }
+
+.sobre-body p  { margin: 8px 0; line-height: 1.6; color: #374151; }
+.sobre-body ul { margin: 8px 0 8px 20px; color: #374151; line-height: 1.7; }
+.sobre-body li { margin-bottom: 2px; }
+
+.sobre-body pre {
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 12px 16px;
+    font-size: 12px;
+    overflow-x: auto;
+    margin: 10px 0;
+}
+
+.sobre-body code {
+    background: #f0f4f8;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 12px;
+    color: #1e3a5f;
+}
+
+.sobre-body pre code {
+    background: none;
+    padding: 0;
+    color: #374151;
+}
+
+.sobre-body strong { color: #1e293b; }
+
+.sobre-footer {
+    margin-top: 16px;
+    font-size: 11px;
+    color: #9ca3af;
+    text-align: right;
+}
+
+/* ============================================================
+   BTN SOBRE no header (link)
+   ============================================================ */
+.btn-sobre {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(255,255,255,.12);
+    color: rgba(255,255,255,.85);
+    border: 1px solid rgba(255,255,255,.2);
+    border-radius: 6px;
+    padding: 5px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background .2s;
+}
+
+.btn-sobre:hover {
+    background: rgba(255,255,255,.2);
+    color: #fff;
+    text-decoration: none;
 }

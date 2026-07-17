@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>PinPad</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        body { background: #f5f7fa; font-family: inherit; padding: 24px; }
+
+        .pinpad-header {
+            margin-bottom: 28px;
+        }
+        .pinpad-header h2 {
+            margin: 0 0 4px 0;
+            font-size: 1.4rem;
+            color: #2c3e50;
+        }
+        .pinpad-header p {
+            margin: 0;
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+
+        .pinpad-porta-info {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: #e8f0fe;
+            border: 1px solid #b8cffa;
+            border-radius: 6px;
+            padding: 6px 14px;
+            font-size: 0.88rem;
+            color: #3a6bc7;
+            margin-bottom: 28px;
+            font-weight: 600;
+        }
+        .pinpad-porta-info span { font-weight: 400; color: #555; }
+
+        .pinpad-main-btn {
+            display: block;
+            width: 100%;
+            max-width: 480px;
+            margin: 0 auto 28px auto;
+            padding: 36px 24px;
+            font-size: 2rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform 0.1s, box-shadow 0.1s;
+            text-align: center;
+            color: #1a6b3a;
+            background: #d4edda;
+            border: 2px solid #a0d9b5;
+            box-shadow: 0 4px 14px rgba(40,167,69,0.15);
+        }
+        .pinpad-main-btn:hover {
+            background: #b8e0c4;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(40,167,69,0.25);
+        }
+        .pinpad-main-btn:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 6px rgba(40,167,69,0.15);
+        }
+        .pinpad-main-btn .btn-icon { font-size: 2.4rem; display: block; margin-bottom: 8px; }
+        .pinpad-main-btn .btn-label { font-size: 1.5rem; display: block; }
+        .pinpad-main-btn .btn-desc { font-size: 0.85rem; font-weight: 400; color: #2d7a4f; display: block; margin-top: 6px; }
+
+        .pinpad-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            max-width: 480px;
+            margin: 0 auto;
+        }
+
+        .pinpad-btn {
+            padding: 28px 12px;
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+            border: 2px solid;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform 0.1s, box-shadow 0.1s;
+            text-align: center;
+        }
+        .pinpad-btn:hover {
+            transform: translateY(-2px);
+        }
+        .pinpad-btn:active {
+            transform: translateY(0);
+        }
+        .pinpad-btn .btn-icon { font-size: 1.8rem; display: block; margin-bottom: 6px; }
+        .pinpad-btn .btn-label { font-size: 1rem; display: block; }
+        .pinpad-btn .btn-desc { font-size: 0.75rem; font-weight: 400; display: block; margin-top: 4px; }
+
+        .btn-senha {
+            color: #154360;
+            background: #d6eaf8;
+            border-color: #a9cce3;
+            box-shadow: 0 4px 12px rgba(21,67,96,0.12);
+        }
+        .btn-senha:hover { background: #b9d8f0; box-shadow: 0 6px 16px rgba(21,67,96,0.2); }
+
+        .btn-enter {
+            color: #1a5276;
+            background: #d5f5e3;
+            border-color: #82e0aa;
+            box-shadow: 0 4px 12px rgba(26,82,118,0.12);
+        }
+        .btn-enter:hover { background: #abebc6; box-shadow: 0 6px 16px rgba(26,82,118,0.2); }
+
+        .btn-limpa {
+            color: #78281f;
+            background: #fadbd8;
+            border-color: #f5b7b1;
+            box-shadow: 0 4px 12px rgba(120,40,31,0.12);
+        }
+        .btn-limpa:hover { background: #f5a49d; box-shadow: 0 6px 16px rgba(120,40,31,0.2); }
+
+        .resultado-box {
+            max-width: 480px;
+            margin: 24px auto 0 auto;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            display: none;
+        }
+        .resultado-box.ok {
+            background: #d4edda;
+            border: 1px solid #a0d9b5;
+            color: #1a6b3a;
+        }
+        .resultado-box.erro {
+            background: #fadbd8;
+            border: 1px solid #f5b7b1;
+            color: #78281f;
+        }
+        .resultado-box.loading {
+            background: #e8f0fe;
+            border: 1px solid #b8cffa;
+            color: #3a6bc7;
+        }
+    </style>
+</head>
+<body>
+
+<div class="pinpad-header">
+    <h2><svg width="18" height="24" viewBox="0 0 30 40" fill="none" style="vertical-align:middle;margin-right:6px" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="28" height="38" rx="3" fill="#546e7a" stroke="#37474f" stroke-width="1"/><rect x="3" y="3" width="24" height="11" rx="2" fill="#80deea"/><path d="M12 8 Q15 5.5 18 8 M10 11 Q15 6.5 20 11" stroke="white" stroke-width="1.2" stroke-linecap="round" fill="none"/><rect x="3.5" y="17" width="6" height="4.5" rx="1" fill="#78909c"/><rect x="12" y="17" width="6" height="4.5" rx="1" fill="#78909c"/><rect x="20.5" y="17" width="6" height="4.5" rx="1" fill="#78909c"/><rect x="3.5" y="23.5" width="6" height="4.5" rx="1" fill="#78909c"/><rect x="12" y="23.5" width="6" height="4.5" rx="1" fill="#78909c"/><rect x="20.5" y="23.5" width="6" height="4.5" rx="1" fill="#78909c"/><rect x="3.5" y="30" width="6" height="4.5" rx="1" fill="#ef5350"/><rect x="12" y="30" width="6" height="4.5" rx="1" fill="#fdd835"/><rect x="20.5" y="30" width="6" height="4.5" rx="1" fill="#66bb6a"/></svg>PinPad</h2>
+    <p>Controle remoto do robô de PinPad via porta serial</p>
+</div>
+
+<div class="pinpad-porta-info">
+    &#128268; Porta: <span>{{ porta }}</span>
+</div>
+
+<button class="pinpad-main-btn" onclick="enviarComando('cartao')">
+    <span class="btn-icon">&#128179;</span>
+    <span class="btn-label">CARTÃO</span>
+    <span class="btn-desc">Aproximar / remover cartão do PinPad</span>
+</button>
+
+<div class="pinpad-row">
+    <button class="pinpad-btn btn-senha" onclick="enviarComando('senha')">
+        <span class="btn-icon"><img src="/img/icone_senha.png" alt="" style="height:1.8rem;width:auto;display:block;margin:0 auto"></span>
+        <span class="btn-label">SENHA</span>
+        <span class="btn-desc">Digitar senha padrão</span>
+    </button>
+    <button class="pinpad-btn btn-enter" onclick="enviarComando('enter')">
+        <span class="btn-icon">&#9166;</span>
+        <span class="btn-label">ENTER</span>
+        <span class="btn-desc">Pressionar Enter</span>
+    </button>
+    <button class="pinpad-btn btn-limpa" onclick="enviarComando('limpa')">
+        <span class="btn-icon">&#10005;</span>
+        <span class="btn-label">LIMPA</span>
+        <span class="btn-desc">Cancelar / limpar</span>
+    </button>
+</div>
+
+<div id="resultado" class="resultado-box"></div>
+
+<script>
+    function enviarComando(cmd) {
+        const resultado = document.getElementById('resultado');
+        resultado.className = 'resultado-box loading';
+        resultado.style.display = 'block';
+        resultado.textContent = 'Enviando comando "' + cmd + '"...';
+
+        fetch('/pinpad/comando', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({comando: cmd})
+        })
+        .then(r => r.json())
+        .then(data => {
+            resultado.className = 'resultado-box ' + (data.sucesso ? 'ok' : 'erro');
+            resultado.textContent = data.mensagem;
+        })
+        .catch(err => {
+            resultado.className = 'resultado-box erro';
+            resultado.textContent = 'Erro de comunicação: ' + err;
+        });
+    }
+</script>
+
+</body>
+</html>

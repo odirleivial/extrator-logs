@@ -1,0 +1,53 @@
+{# Renderiza apenas o controle de valor de um campo `fld` (sem checkbox/label). #}
+{% if fld.type == 'text' %}
+    <input type="text" name="val__{{ fld.name }}" value="{{ fld.value }}">
+
+{% elif fld.type == 'number' %}
+    <input type="number" name="val__{{ fld.name }}" value="{{ fld.value }}">
+
+{% elif fld.type == 'bool' %}
+    <select name="val__{{ fld.name }}">
+        <option value="true" {% if fld.value %}selected{% endif %}>Verdadeiro</option>
+        <option value="false" {% if not fld.value %}selected{% endif %}>Falso</option>
+    </select>
+
+{% elif fld.type == 'bool_auto' %}
+    <select name="val__{{ fld.name }}">
+        <option value="Automatico" {% if fld.value == 'Automatico' %}selected{% endif %}>Automático</option>
+        <option value="true" {% if fld.value is sameas true %}selected{% endif %}>Verdadeiro</option>
+        <option value="false" {% if fld.value is sameas false %}selected{% endif %}>Falso</option>
+    </select>
+
+{% elif fld.type in ('select', 'select_auto') %}
+    <select name="val__{{ fld.name }}">
+        {% if fld.type == 'select_auto' %}
+        <option value="Automatico" {% if fld.value == 'Automatico' %}selected{% endif %}>Automático</option>
+        {% endif %}
+        {% for opt in fld.options %}
+        <option value="{{ opt }}" {% if fld.value == opt %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+    </select>
+
+{% elif fld.type == 'text_auto' %}
+    <select class="mode-select" data-target="val__{{ fld.name }}">
+        <option value="Automatico" {% if fld.value == 'Automatico' %}selected{% endif %}>Automático</option>
+        <option value="Manual" {% if fld.value != 'Automatico' %}selected{% endif %}>Manual</option>
+    </select>
+    <input type="text" name="val__{{ fld.name }}" class="manual-value"
+           value="{{ '' if fld.value == 'Automatico' else fld.value }}"
+           {% if fld.value == 'Automatico' %}hidden{% endif %}>
+
+{% elif fld.type == 'select_manual' %}
+    <select class="mode-select" data-target="val__{{ fld.name }}">
+        {% for opt in fld.options %}
+        <option value="{{ opt }}" {% if fld.value == opt %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+    </select>
+    <input type="text" name="val__{{ fld.name }}" class="manual-value" value=""
+           {% if fld.value != 'Manual' %}hidden{% endif %}>
+
+{% elif fld.type == 'cnae' %}
+    <input type="number" name="qtd__{{ fld.name }}" min="1" value="{{ fld.value }}" style="max-width:90px">
+    <span class="hint">itens gerados automaticamente</span>
+
+{% endif %}

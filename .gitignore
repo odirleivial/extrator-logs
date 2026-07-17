@@ -3,6 +3,9 @@ build/
 dist/
 __pycache__/
 *.pyc
+BEC_pacote/
+AgentExtratarLog_pacote/
+*_instalacao.zip
 
 # Logs e saídas geradas em runtime
 log/
@@ -10,6 +13,18 @@ output/
 
 # Configurações sensíveis — nunca versionar
 properties/secure.properties
+
+# Binários do agente
+server_agent/*.exe
+server_agent/nssm.exe
+server_agent/AgentExtratarLog
+server_agent/agent_extrator_log.spec
+
+# Dados gerados em runtime
+static/data/
+
+# Pastas de avaliação/rascunho
+_avaliar/
 
 # Arquivos temporários
 *.tmp

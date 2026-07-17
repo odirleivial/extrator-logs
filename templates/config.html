@@ -186,6 +186,41 @@
     <script>
         var config = {{ config_props | tojson | safe }};
 
+        function atualizarVisibilidadeTunnel() {
+            var algumTunnel = document.querySelector('input[type="radio"][value="tunnel"]:checked');
+            var modoPdv = document.querySelector('input[name="modo_instalacao"][value="pdv"]:checked');
+            var extra = document.getElementById('tunnel-extra');
+            var visivel = algumTunnel || modoPdv;
+            extra.style.display = visivel ? 'block' : 'none';
+            if (algumTunnel && !_tunnelPollTimer) iniciarPollTunnel();
+        }
+
+        var _tunnelPollTimer = null;
+        function iniciarPollTunnel() {
+            atualizarStatusTunnel();
+            _tunnelPollTimer = setInterval(atualizarStatusTunnel, 4000);
+        }
+        function atualizarStatusTunnel() {
+            fetch('/api/tunnel/status')
+                .then(r => r.json())
+                .then(d => {
+                    var box = document.getElementById('tunnel-status-box');
+                    if (!box) return;
+                    if (d.ativo) {
+                        box.style.cssText = 'margin-bottom:14px;padding:10px 14px;border-radius:6px;font-size:0.85rem;background:#d4edda;border:1px solid #a0d9b5;color:#1a6b3a;';
+                        box.innerHTML = '&#10004; Túnel ativo — ' + (d.url || 'conectado');
+                    } else if (d.erro) {
+                        box.style.cssText = 'margin-bottom:14px;padding:10px 14px;border-radius:6px;font-size:0.85rem;background:#fadbd8;border:1px solid #f5b7b1;color:#78281f;';
+                        box.innerHTML = '&#10006; Erro: ' + d.erro;
+                    } else {
+                        box.style.cssText = 'margin-bottom:14px;padding:10px 14px;border-radius:6px;font-size:0.85rem;background:#fff3cd;border:1px solid #ffc107;color:#856404;';
+                        box.innerHTML = '&#9679; Túnel inativo — reinicie o BEC com modo Tunnel ativo';
+                    }
+                })
+                .catch(() => {});
+        }
+        window.addEventListener('DOMContentLoaded', atualizarVisibilidadeTunnel);
+
         function abrirSecao(evento, id) {
             document.querySelectorAll('.cfg-section').forEach(s => s.classList.remove('active'));
             document.querySelectorAll('.cfg-tab').forEach(b => b.classList.remove('active'));
@@ -289,6 +324,8 @@
             `;
         }
 
+        function alternarModoPDV() { atualizarVisibilidadeTunnel(); }
+
         document.addEventListener('DOMContentLoaded', function() {
             carregarConsultas();
             document.querySelector('.cfg-tab').click();
@@ -314,6 +351,105 @@
         <!-- ======== SEÇÃO: GERAL ======== -->
         <div id="sec-geral" class="cfg-section">
 
+            <!-- Modo de instalação -->
+            <div class="card">
+                <h4>Modo de instalação</h4>
+                <small>Indica se o BEC está instalado em um computador pessoal da equipe QA ou diretamente em um PDV de teste.</small>
+                <div style="display:flex;gap:16px;margin-top:12px">
+                    <label class="tab-toggle" style="cursor:pointer">
+                        <input type="radio" name="modo_instalacao" value="pc"
+                            {% if config_props.get('modo_instalacao','pc') != 'pdv' %}checked{% endif %}
+                            onchange="alternarModoPDV()">
+                        Computador pessoal (QA)
+                    </label>
+                    <label class="tab-toggle" style="cursor:pointer">
+                        <input type="radio" name="modo_instalacao" value="pdv"
+                            {% if config_props.get('modo_instalacao','pc') == 'pdv' %}checked{% endif %}
+                            onchange="alternarModoPDV()">
+                        PDV de teste
+                    </label>
+                </div>
+            </div>
+
+            <!-- Modo de comunicação com o Agente -->
+            <div class="card">
+                <h4>Modo de comunicação com o Agente</h4>
+                <small>Define como o BEC envia comandos ao Agente Extrator em cada funcionalidade. O modo <strong>Cloudflare Tunnel</strong> é direto e rápido (~2s); o modo <strong>E-mail</strong> é o padrão legado.</small>
+
+                <div style="margin-top:14px;">
+                    {% set funcionalidades = [('pinpad', 'PinPad')] %}
+                    {% for chave, label in funcionalidades %}
+                    <div style="display:flex;align-items:center;gap:20px;padding:10px 0;border-bottom:1px solid #eef1f6;">
+                        <span style="min-width:120px;font-weight:600;font-size:0.9rem;color:#444;">{{ label }}</span>
+                        <label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer;font-size:0.88rem;">
+                            <input type="radio" name="{{ chave }}_modo_comunicacao" value="email"
+                                {% if config_props.get(chave + '_modo_comunicacao', 'email') != 'tunnel' %}checked{% endif %}
+                                onchange="atualizarVisibilidadeTunnel()">
+                            E-mail
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer;font-size:0.88rem;">
+                            <input type="radio" name="{{ chave }}_modo_comunicacao" value="tunnel"
+                                {% if config_props.get(chave + '_modo_comunicacao', 'email') == 'tunnel' %}checked{% endif %}
+                                onchange="atualizarVisibilidadeTunnel()">
+                            Cloudflare Tunnel
+                        </label>
+                    </div>
+                    {% endfor %}
+                </div>
+
+                <!-- Campos de loja/pdv e status — visíveis quando qualquer funcionalidade usa tunnel -->
+                <div id="tunnel-extra" style="display:none;margin-top:16px;padding:14px;background:#f0f4ff;border:1px solid #b8cffa;border-radius:6px;">
+                    <div id="tunnel-status-box" style="margin-bottom:14px;padding:10px 14px;border-radius:6px;font-size:0.85rem;background:#e8f0fe;border:1px solid #b8cffa;color:#3a6bc7;">
+                        Verificando status do relay...
+                    </div>
+                    <div class="grid-2">
+                        <div class="field-group">
+                            <label>URL do Relay (Cloudflare Worker)</label>
+                            <input type="text" name="bec_tunnel_url"
+                                value="{{ config_props.get('bec_tunnel_url','') }}"
+                                placeholder="https://bec-relay.seu-usuario.workers.dev">
+                            <small>URL do Worker implantado no Cloudflare — <strong>igual em todas as máquinas</strong></small>
+                        </div>
+                        <div class="field-group">
+                            <label>Token de autenticação</label>
+                            <input type="password" name="pinpad_tunnel_token"
+                                value="{{ config_props.get('pinpad_tunnel_token','') }}"
+                                placeholder="Token secreto compartilhado">
+                            <small>Mesmo valor configurado em <code>TOKEN</code> no Worker e no <code>agent.properties</code></small>
+                        </div>
+                    </div>
+                    <div class="grid-2" style="margin-top:6px;">
+                        <div class="field-group">
+                            <label>Loja do BEC</label>
+                            <input type="text" name="bec_loja" value="{{ config_props.get('bec_loja','') }}" placeholder="Ex: 0045">
+                            <small>Loja que este BEC serve via relay</small>
+                        </div>
+                        <div class="field-group">
+                            <label>PDV do BEC</label>
+                            <input type="text" name="bec_pdv" value="{{ config_props.get('bec_pdv','') }}" placeholder="Ex: 450">
+                            <small>PDV que este BEC serve via relay</small>
+                        </div>
+                    </div>
+                    <details style="margin-top:12px;">
+                        <summary style="cursor:pointer;font-size:0.82rem;color:#3a6bc7;font-weight:600;">&#128218; Como configurar o Cloudflare Worker (fazer uma vez, válido para todas as máquinas)</summary>
+                        <ol style="font-size:0.82rem;color:#555;margin:8px 0 0 16px;line-height:1.8;">
+                            <li>Acesse <strong>dash.cloudflare.com</strong> → Workers &amp; Pages → Create</li>
+                            <li>Cole o código do arquivo <code>cloudflare_worker/relay.js</code> da pasta do projeto</li>
+                            <li>Em <strong>Settings → Variables</strong>, adicione:
+                                <code>TOKEN = &lt;seu token secreto&gt;</code></li>
+                            <li>Em <strong>Settings → Variables → KV Namespace Bindings</strong>, crie um namespace chamado <code>bec-relay</code> e vincule com o nome de variável <code>KV</code></li>
+                            <li>Salve e faça o deploy. Copie a URL gerada (ex: <code>https://bec-relay.usuario.workers.dev</code>)</li>
+                            <li>Cole a URL e o token nos campos acima e salve</li>
+                            <li>No <code>agent.properties</code> de cada PDV, configure:<br>
+                                <code>pinpad_modo_comunicacao=tunnel</code><br>
+                                <code>bec_tunnel_url=https://bec-relay.usuario.workers.dev</code><br>
+                                <code>pinpad_tunnel_token=&lt;mesmo token&gt;</code><br>
+                                <code>loja=0045 &nbsp; pdv=450</code></li>
+                        </ol>
+                    </details>
+                </div>
+            </div>
+
             <!-- Abas visíveis -->
             <div class="card">
                 <h4>Abas visíveis na interface</h4>
@@ -322,7 +458,9 @@
                         ('solicitar_logs',  'Solicitar Logs'),
                         ('exportar_oracle', 'Exportar Oracle'),
                         ('requisicao_api',  'Requisição API'),
-                        ('configurar_pdv',  'Configurar PDV'),
+                        ('configurar_pdv',  'Manutenção PDV'),
+                        ('pinpad',          'PinPad'),
+                        ('mdm',             'MDM'),
                         ('configuracoes',   'Configurações')
                     ] %}
                     {% for key, label in tab_labels %}
@@ -376,6 +514,29 @@
                 <small>Nomes dos arquivos de parâmetros, separados por vírgula.</small>
                 <input type="text" name="parametros_pdv"
                     value="{{ config_props.get('PARAMETROS_PDV', '') }}">
+            </div>
+
+            <!-- PinPad -->
+            <div class="card">
+                <h4>PinPad — Porta Serial</h4>
+                <small>Porta COM usada pelo robô de PinPad para comunicação serial com o dispositivo.</small>
+                <div class="field-group" style="margin-top:8px; max-width:200px;">
+                    <label>Porta COM</label>
+                    <select name="pinpad_porta">
+                        {% for i in range(1, 21) %}
+                        {% set porta = 'COM' ~ i %}
+                        <option value="{{ porta }}" {% if config_props.get('pinpad_porta', 'COM10') == porta %}selected{% endif %}>{{ porta }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <!-- Lojas ignoradas -->
+            <div class="card">
+                <h4>Lojas ignoradas — Relatório e Versão</h4>
+                <small>Lojas que não aparecerão nos popups de Relatório Parametrização e Versão. Separadas por vírgula. Ex: server,PRD</small>
+                <input type="text" name="ignorar_lojas"
+                    value="{{ config_props.get('ignorar_lojas', '') }}">
             </div>
 
         </div><!-- /sec-geral -->

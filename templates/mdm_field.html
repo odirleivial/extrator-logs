@@ -1,0 +1,11 @@
+{# Renderiza uma linha completa de campo: checkbox (flag) + label + valor + ajuda. `fld` deve estar definido. #}
+<div class="field-row">
+    <label class="field-check">
+        <input type="checkbox" class="flag-cb" name="flag__{{ fld.name }}" {% if fld.flag %}checked{% endif %}>
+        <span>{{ fld.label }}</span>
+    </label>
+    <div class="field-value">
+        {% include 'mdm_value.html' %}
+    </div>
+    {% if fld.help %}<small class="field-help">{{ fld.help }}</small>{% endif %}
+</div>

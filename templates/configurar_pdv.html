@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Configurar PDV</title>
+    <title>Manutenção PDV</title>
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
     <style>
         .parametros-container {
@@ -11,8 +11,8 @@
             background-color: #f0f4f8;
             border-radius: 5px;
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr)); /* 2 colunas */
-            gap: 8px 20px; /* espaço entre linhas e colunas */
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px 20px;
         }
         .parametros-container label {
             display: flex;
@@ -21,15 +21,117 @@
             font-weight: normal;
             margin: 0;
         }
+        .popup-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.45);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .popup-box {
+            background: #fff;
+            padding: 24px;
+            border-radius: 8px;
+            min-width: 420px;
+            max-width: 560px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        }
+        .popup-box h3 { margin-top: 0; }
+        .sel-tudo-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+            font-size: 0.85em;
+            color: #555;
+            cursor: pointer;
+        }
+        .rel-lojas-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 6px 16px;
+            margin: 4px 0;
+            padding: 10px;
+            background: #f0f4f8;
+            border-radius: 5px;
+        }
+        .rel-lojas-grid label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: normal;
+            cursor: pointer;
+        }
+        .rel-pdvs-section { margin-top: 12px; }
+        .rel-pdvs-loja { margin-bottom: 10px; }
+        .rel-pdvs-loja-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .rel-pdvs-loja-header strong { font-size: 0.9em; color: #444; }
+        .rel-pdvs-loja-header .sel-tudo-pdv {
+            font-size: 0.8em; color: #555; cursor: pointer;
+            display: flex; align-items: center; gap: 4px;
+        }
+        .rel-pdvs-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 4px 12px;
+            padding: 8px;
+            background: #f0f4f8;
+            border-radius: 5px;
+        }
+        .rel-pdvs-grid label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-weight: normal;
+            font-size: 0.9em;
+            cursor: pointer;
+        }
+        .popup-actions {
+            display: flex;
+            justify-content: flex-start;
+            gap: 8px;
+            margin-top: 16px;
+        }
     </style>
     <script>
         var config = {{ config_props | tojson | safe }};
+
+        var _popupAcao = null; // 'relatorio', 'versao', 'reiniciar', 'fechar' ou 'parametrizar'
+
+        function mostrarAlerta(mensagem, tipo) {
+            var alerta = document.getElementById("alerta");
+            alerta.textContent = mensagem;
+            alerta.className = "alerta alerta-" + tipo;
+            alerta.style.display = "block";
+            if (tipo === "sucesso") setTimeout(function() { alerta.style.display = "none"; }, 6000);
+        }
+
+        function ocultarAlerta() {
+            document.getElementById("alerta").style.display = "none";
+        }
+
+        document.addEventListener("focusin", function(e) {
+            if (e.target.matches("input, select, textarea")) ocultarAlerta();
+        });
 
         function converterParaArray(valor) {
             if (typeof valor === 'string') {
                 return valor.split(',').map(v => v.trim()).filter(v => v);
             }
             return Array.isArray(valor) ? valor : [];
+        }
+
+        function lojasIgnoradas() {
+            return converterParaArray(config['ignorar_lojas'] || '');
         }
 
         function populaLojas() {
@@ -61,7 +163,7 @@
             var container = document.getElementById("parametros_container");
             container.innerHTML = "";
             var parametros = converterParaArray(
-                config['PARAMETROS_PDV'] || 'parametrosGeraisPDV.properties,ext.proparmperties,end_srv_mon'
+                config['PARAMETROS_PDV'] || 'parametrosGeraisPDV.properties,ext.properties,end_srv_mon'
             );
             parametros.forEach(function(par) {
                 var label = document.createElement("label");
@@ -81,32 +183,227 @@
             var pdv = document.getElementById("pdv_pdv").value;
             var cbs = document.querySelectorAll('input[name="parametros"]:checked');
             var parametros = Array.from(cbs).map(cb => cb.value);
-
-            if (!loja || !pdv) {
-                alert("Selecione Loja e PDV.");
-                return;
-            }
-            if (parametros.length === 0) {
-                alert("Selecione pelo menos um parâmetro.");
-                return;
-            }
-
+            if (!loja || !pdv) { mostrarAlerta("Selecione Loja e PDV.", "erro"); return; }
+            if (parametros.length === 0) { mostrarAlerta("Selecione pelo menos um parâmetro.", "erro"); return; }
+            ocultarAlerta();
             var body = "loja=" + encodeURIComponent(loja) +
                        "&pdv=" + encodeURIComponent(pdv) +
                        "&parametros=" + encodeURIComponent(parametros.join(','));
-
             fetch("/enviar-config-pdv", {
                 method: "POST",
                 headers: {"Content-Type": "application/x-www-form-urlencoded"},
                 body: body
-            }).then(r => r.json())
-              .then(d => {
-                  if (d.sucesso) {
-                      alert(d.mensagem);
-                  } else {
-                      alert("Erro: " + d.mensagem);
-                  }
-              }).catch(err => alert("Erro na solicitação: " + err));
+            }).then(r => r.json()).then(d => {
+                if (d.sucesso) mostrarAlerta(d.mensagem, "sucesso");
+                else mostrarAlerta("Erro: " + d.mensagem, "erro");
+            }).catch(err => mostrarAlerta("Erro na solicitação: " + err, "erro"));
+        }
+
+        function verificarParametrizacao() {
+            var loja = document.getElementById("loja_pdv").value;
+            var pdv = document.getElementById("pdv_pdv").value;
+            var emailDestino = document.getElementById("email_destino").value;
+            if (!loja || !pdv) { mostrarAlerta("Selecione Loja e PDV.", "erro"); return; }
+            if (!emailDestino) { mostrarAlerta("Selecione o e-mail destino.", "erro"); return; }
+            ocultarAlerta();
+            var body = "loja=" + encodeURIComponent(loja) +
+                       "&pdv=" + encodeURIComponent(pdv) +
+                       "&email_destino=" + encodeURIComponent(emailDestino);
+            fetch("/verificar-config-pdv", {
+                method: "POST",
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                body: body
+            }).then(r => r.json()).then(d => {
+                if (d.sucesso) mostrarAlerta(d.mensagem, "sucesso");
+                else mostrarAlerta("Erro: " + d.mensagem, "erro");
+            }).catch(err => mostrarAlerta("Erro na solicitação: " + err, "erro"));
+        }
+
+        function abrirEnviarParametros() {
+            var cbs = document.querySelectorAll('input[name="parametros"]:checked');
+            if (cbs.length === 0) { mostrarAlerta("Selecione pelo menos um parâmetro.", "erro"); return; }
+            abrirPopup('parametrizar');
+        }
+
+        /* ---- Popup genérico (Relatório e Versão) ---- */
+
+        function abrirPopup(acao) {
+            _popupAcao = acao;
+            var titulos = { relatorio: 'Relatório Parametrização', versao: 'Status dos PDVs', reiniciar: 'Reiniciar PDV', fechar: 'Fechar PDV', parametrizar: 'Enviar Parâmetros' };
+            document.getElementById("popup_titulo").textContent = titulos[acao] || acao;
+
+            var ignorar = lojasIgnoradas();
+            var lojas = converterParaArray(config['stores']).filter(l => !ignorar.includes(l));
+
+            var grid = document.getElementById("popup_lojas_grid");
+            grid.innerHTML = "";
+            lojas.forEach(function(loja) {
+                var label = document.createElement("label");
+                var cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.className = "popup-loja-cb";
+                cb.value = loja;
+                cb.addEventListener("change", function() {
+                    sincSelTudoLojas();
+                    atualizaPdvsPopup();
+                });
+                label.appendChild(cb);
+                label.appendChild(document.createTextNode(loja));
+                grid.appendChild(label);
+            });
+
+            document.getElementById("popup_sel_tudo_lojas").checked = false;
+            document.getElementById("popup_sel_tudo_pdvs").checked = false;
+            document.getElementById("popup_pdvs_section").innerHTML = "";
+            document.getElementById("popup_overlay").style.display = "flex";
+        }
+
+        function fecharPopup() {
+            document.getElementById("popup_overlay").style.display = "none";
+            _popupAcao = null;
+        }
+
+        function toggleSelTudoLojas(cb) {
+            document.querySelectorAll(".popup-loja-cb").forEach(function(c) { c.checked = cb.checked; });
+            if (!cb.checked) {
+                document.getElementById("popup_sel_tudo_pdvs").checked = false;
+            }
+            atualizaPdvsPopup();
+        }
+
+        function toggleSelTudoPdvs(cb) {
+            // Garante que todas as lojas estejam marcadas primeiro
+            document.querySelectorAll(".popup-loja-cb").forEach(function(c) { c.checked = cb.checked; });
+            document.getElementById("popup_sel_tudo_lojas").checked = cb.checked;
+            atualizaPdvsPopup();
+            // Após renderizar os PDVs, marca/desmarca todos
+            document.querySelectorAll(".popup-pdv-cb").forEach(function(c) { c.checked = cb.checked; });
+            // Sincroniza checkboxes "selecionar tudo" por loja
+            document.querySelectorAll("[data-sel-tudo-loja]").forEach(function(c) { c.checked = cb.checked; });
+        }
+
+        function sincSelTudoLojas() {
+            var todos = document.querySelectorAll(".popup-loja-cb");
+            var marcados = document.querySelectorAll(".popup-loja-cb:checked");
+            var todasMarcadas = todos.length > 0 && todos.length === marcados.length;
+            document.getElementById("popup_sel_tudo_lojas").checked = todasMarcadas;
+            if (!todasMarcadas) {
+                document.getElementById("popup_sel_tudo_pdvs").checked = false;
+            }
+        }
+
+        function sincSelTudoPdvs() {
+            var todos = document.querySelectorAll(".popup-pdv-cb");
+            var marcados = document.querySelectorAll(".popup-pdv-cb:checked");
+            var todasLojas = document.querySelectorAll(".popup-loja-cb");
+            var todasLojasMarcadas = todasLojas.length > 0 &&
+                todasLojas.length === document.querySelectorAll(".popup-loja-cb:checked").length;
+            document.getElementById("popup_sel_tudo_pdvs").checked =
+                todasLojasMarcadas && todos.length > 0 && todos.length === marcados.length;
+        }
+
+        function atualizaPdvsPopup() {
+            var lojasSel = Array.from(document.querySelectorAll(".popup-loja-cb:checked")).map(c => c.value);
+            var section = document.getElementById("popup_pdvs_section");
+            section.innerHTML = "";
+            if (lojasSel.length === 0) return;
+
+            lojasSel.forEach(function(loja) {
+                var pdvs = converterParaArray(config[loja + "_pdvs"]);
+                if (pdvs.length === 0) return;
+
+                var div = document.createElement("div");
+                div.className = "rel-pdvs-loja";
+
+                // cabeçalho com "selecionar tudo" dos PDVs desta loja
+                var header = document.createElement("div");
+                header.className = "rel-pdvs-loja-header";
+                var strong = document.createElement("strong");
+                strong.textContent = "PDVs da loja " + loja + ":";
+                header.appendChild(strong);
+
+                var selTudoLabel = document.createElement("label");
+                selTudoLabel.className = "sel-tudo-pdv";
+                var selTudoCb = document.createElement("input");
+                selTudoCb.type = "checkbox";
+                selTudoCb.dataset.loja = loja;
+                selTudoCb.dataset.selTudoLoja = loja;
+                selTudoCb.addEventListener("change", function() {
+                    var checked = this.checked;
+                    document.querySelectorAll(".popup-pdv-cb[data-loja='" + loja + "']")
+                        .forEach(function(c) { c.checked = checked; });
+                    sincSelTudoPdvs();
+                });
+                selTudoLabel.appendChild(selTudoCb);
+                selTudoLabel.appendChild(document.createTextNode(" Selecionar tudo"));
+                header.appendChild(selTudoLabel);
+                div.appendChild(header);
+
+                var grid = document.createElement("div");
+                grid.className = "rel-pdvs-grid";
+                pdvs.forEach(function(pdv) {
+                    var label = document.createElement("label");
+                    var cb = document.createElement("input");
+                    cb.type = "checkbox";
+                    cb.className = "popup-pdv-cb";
+                    cb.dataset.loja = loja;
+                    cb.value = pdv;
+                    cb.addEventListener("change", function() {
+                        var todos = document.querySelectorAll(".popup-pdv-cb[data-loja='" + loja + "']");
+                        var marc  = document.querySelectorAll(".popup-pdv-cb[data-loja='" + loja + "']:checked");
+                        selTudoCb.checked = todos.length > 0 && todos.length === marc.length;
+                        sincSelTudoPdvs();
+                    });
+                    label.appendChild(cb);
+                    label.appendChild(document.createTextNode(pdv));
+                    grid.appendChild(label);
+                });
+                div.appendChild(grid);
+                section.appendChild(div);
+            });
+        }
+
+        function construirSelecao() {
+            var pdvPorLoja = {};
+            document.querySelectorAll(".popup-pdv-cb:checked").forEach(function(cb) {
+                var l = cb.dataset.loja;
+                if (!pdvPorLoja[l]) pdvPorLoja[l] = [];
+                pdvPorLoja[l].push(cb.value);
+            });
+            return Object.entries(pdvPorLoja).map(([l, ps]) => l + ":" + ps.join(",")).join("|");
+        }
+
+        function enviarPopup() {
+            var lojas = document.querySelectorAll(".popup-loja-cb:checked");
+            if (lojas.length === 0) { mostrarAlerta("Selecione pelo menos uma loja.", "erro"); return; }
+            var pdvs = document.querySelectorAll(".popup-pdv-cb:checked");
+            if (pdvs.length === 0) { mostrarAlerta("Selecione pelo menos um PDV.", "erro"); return; }
+            var emailDestino = document.getElementById("email_destino").value;
+            if (!emailDestino) { mostrarAlerta("Selecione o e-mail destino no formulário principal.", "erro"); return; }
+            ocultarAlerta();
+
+            var selecao = construirSelecao();
+            var rotas = { relatorio: '/relatorio-parametrizacao', versao: '/versao-pdv', reiniciar: '/reiniciar-pdv', fechar: '/fechar-pdv', parametrizar: '/enviar-config-pdv' };
+            var rota = rotas[_popupAcao];
+
+            var body = "selecao=" + encodeURIComponent(selecao) +
+                       "&email_destino=" + encodeURIComponent(emailDestino);
+
+            if (_popupAcao === 'parametrizar') {
+                var cbs = document.querySelectorAll('input[name="parametros"]:checked');
+                var parametros = Array.from(cbs).map(cb => cb.value);
+                if (parametros.length === 0) { mostrarAlerta("Selecione pelo menos um parâmetro no formulário.", "erro"); return; }
+                body += "&parametros=" + encodeURIComponent(parametros.join(','));
+            }
+
+            fetch(rota, {
+                method: "POST",
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                body: body
+            }).then(r => r.json()).then(d => {
+                if (d.sucesso) { mostrarAlerta(d.mensagem, "sucesso"); fecharPopup(); }
+                else mostrarAlerta("Erro: " + d.mensagem, "erro");
+            }).catch(err => mostrarAlerta("Erro na solicitação: " + err, "erro"));
         }
 
         document.addEventListener("DOMContentLoaded", function() {
@@ -114,73 +411,40 @@
             populaPdvs();
             populaParametros();
             document.getElementById("loja_pdv").addEventListener("change", populaPdvs);
-            document.getElementById("form_pdv").addEventListener("submit", enviarConfiguracaoPDV);
+            // enviarConfiguracaoPDV legado removido — uso via popup abrirEnviarParametros()
         });
-// ini
-        function abrirPopupVerificacao() {
-            document.getElementById("email_verificacao").value = "";
-            document.getElementById("popup_verificacao").style.display = "flex";
-        }
-
-        function fecharPopupVerificacao() {
-            document.getElementById("popup_verificacao").style.display = "none";
-        }
-
-        function confirmarVerificacao() {
-            const emailDestino = document.getElementById("email_verificacao").value.trim();
-            const loja = document.getElementById("loja_pdv").value || '0007';
-            const pdv = document.getElementById("pdv_pdv").value || '53';
-
-            if (!emailDestino) {
-                alert("Informe o e-mail de destino.");
-                return;
-            }
-
-            const body = "email_destino=" + encodeURIComponent(emailDestino) +
-                        "&loja=" + encodeURIComponent(loja) +
-                        "&pdv=" + encodeURIComponent(pdv);
-
-            fetch("/verificar-config-pdv", {
-                method: "POST",
-                headers: {"Content-Type": "application/x-www-form-urlencoded"},
-                body: body
-            }).then(r => r.json())
-            .then(d => {
-                if (d.sucesso) {
-                    alert(d.mensagem);
-                    fecharPopupVerificacao();
-                } else {
-                    alert("Erro: " + d.mensagem);
-                }
-            }).catch(err => {
-                alert("Erro na solicitação: " + err);
-            });
-        }
-//fin
     </script>
 </head>
 
-<div id="popup_verificacao" style="
-    display:none;
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.4);
-    justify-content: center;
-    align-items: center;
-">
-    <div style="background: #fff; padding: 20px; border-radius: 6px; min-width: 320px;">
-        <h3>Verificar configuração</h3>
-        <label for="email_verificacao">E-mail destino:</label>
-        <input type="email" id="email_verificacao" style="width: 100%; padding: 8px; margin: 8px 0;">
-        <div style="text-align: right; margin-top: 10px;">
-            <button type="button" onclick="fecharPopupVerificacao()">Cancelar</button>
-            <button type="button" onclick="confirmarVerificacao()">OK</button>
+<!-- Popup genérico (Relatório e Versão) -->
+<div id="popup_overlay" class="popup-overlay">
+    <div class="popup-box">
+        <h3 id="popup_titulo">Popup</h3>
+
+        <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:6px">
+            <label class="sel-tudo-row" style="margin-bottom:0">
+                <input type="checkbox" id="popup_sel_tudo_lojas" onchange="toggleSelTudoLojas(this)">
+                Selecionar todas as lojas
+            </label>
+            <label class="sel-tudo-row" style="margin-bottom:0">
+                <input type="checkbox" id="popup_sel_tudo_pdvs" onchange="toggleSelTudoPdvs(this)">
+                Selecionar todos os PDVs
+            </label>
+        </div>
+        <div id="popup_lojas_grid" class="rel-lojas-grid"></div>
+
+        <div class="rel-pdvs-section" id="popup_pdvs_section"></div>
+
+        <div class="popup-actions">
+            <button type="button" onclick="enviarPopup()">Enviar</button>
+            <button type="button" onclick="fecharPopup()">Cancelar</button>
         </div>
     </div>
 </div>
 
 <body>
-    <h2>Configurar PDV</h2>
+    <h2>Manutenção PDV</h2>
+    <div id="alerta" style="display:none;"></div>
     <form id="form_pdv">
         <label for="loja_pdv">Loja:</label>
         <select id="loja_pdv" name="loja_pdv" required></select>
@@ -191,8 +455,23 @@
         <h3>Parâmetros</h3>
         <div id="parametros_container" class="parametros-container"></div>
 
-        <button type="submit">Enviar Configuração</button>
-        <button type="button" onclick="abrirPopupVerificacao()">Verificar Parametrização</button>
+        <label for="email_destino">E-mail destino:</label>
+        <select id="email_destino" name="email_destino" required>
+            {% set emails = config_props.get('emails_destino', '').split(',') %}
+            {% for email in emails %}
+                {% set email = email.strip() %}
+                {% if email %}
+                <option value="{{ email }}" {% if loop.first %}selected{% endif %}>{{ email }}</option>
+                {% endif %}
+            {% endfor %}
+        </select>
+
+        <button type="button" onclick="abrirEnviarParametros()">Enviar Parâmetros</button>
+        <button type="button" onclick="verificarParametrizacao()">Verificar Parâmetros</button>
+        <button type="button" onclick="abrirPopup('relatorio')">Relatório Parâmetros</button>
+        <button type="button" onclick="abrirPopup('versao')">Status</button>
+        <button type="button" onclick="abrirPopup('reiniciar')">Reiniciar PDV</button>
+        <button type="button" onclick="abrirPopup('fechar')">Fechar PDV</button>
     </form>
 </body>
 </html>

@@ -1,7 +1,106 @@
-# Documentação da Versão Atual - Extrator de Logs e Dados Oracle
+# Documentação da Versão Atual - Backoffice Equipe QA
 
-**Data:** 28 de Novembro de 2025  
-**Versão:** 1.0 Final
+**Data:** 08 de Julho de 2026  
+**Versão:** 2.13.0
+
+---
+
+## 🔢 Critério de Versionamento (MAJOR.MINOR.PATCH)
+
+| Nível | Quando incrementar | Exemplo |
+|-------|-------------------|---------|
+| **MAJOR** | Mudança de interface, arquitetura ou quebra de compatibilidade | Janela própria, redesign completo |
+| **MINOR** | Nova funcionalidade mantendo compatibilidade | Nova aba, novo tipo de exportação |
+| **PATCH** | Correção de bug ou ajuste sem nova funcionalidade | Fix de crash, texto errado |
+
+A versão é definida em `version.py` e propagada automaticamente para o footer e tela Sobre.
+
+---
+
+## 📋 Histórico de Versões
+
+### 2.13.0 — 08/07/2026
+- **Agente — email de Status PDV reestruturado:**
+  - Colunas Online e StatusServer consolidadas na coluna **Online**: exibe `true` somente quando `indicaOnLine` e `StatusServer` são verdadeiros na última ocorrência do CSIDebugFile **e** o PDV está ligado (porta 4000 respondendo); caso contrário exibe `false`
+  - Novo bloco **Serviços** no cabeçalho (acima de Lidos/Não lidos) com cards ONLINE/OFFLINE por serviço, verificados via conexão TCP (timeout 3s). Serviços iniciais: SiTef (`10.206.112.34:4096`) e Proctrans (`10.56.62.140:4003`)
+  - Serviços configuráveis no `agent.properties` no formato `servico.<Nome>=host:porta` — basta adicionar novas linhas para monitorar mais serviços
+- Pacote de instalação do agente gerado em `server_agent/dist/AgentExtratarLog_v2.13.0.zip` (exe + agent.properties + nssm + bats de serviço)
+
+### 2.12.1 — 08/07/2026
+- Corrige a parametrização do `ext.properties` que falhava em todos os PDVs com o erro `"ext.proparmperties.arquivo" não definido no agent.properties`: o nome do parâmetro estava digitado errado (`ext.proparmperties`) na chave `PARAMETROS_PDV` do `config.properties` e no fallback do `configurar_pdv.html`
+- Remove item duplicado `parametrosGeraisPDV.properties` da lista `PARAMETROS_PDV` (gerava checkbox repetido na tela Configurar PDV)
+
+### 2.12.0 — 02/07/2026
+- Aba MDM (Cadastrar), Pessoa Jurídica: unificado o campo CNPJ em um único controle (Automático/Alfanumérico/Manual) — ao escolher Manual, abre um campo de texto para digitar o CNPJ que vai para o JSON (antes havia dois campos separados e redundantes)
+- Novos presets na área laranja (PF/PJ), visíveis apenas para Pessoa Jurídica:
+  - **Isento de Inscrição Estadual** (Sim/Não): Sim desmarca Data Última Verificação IE, Número IE, UF IE e Status IE, e marca o indicador de isenção como verdadeiro; Não faz o inverso (marca os 4 campos e o indicador como falso)
+  - **Filial** (Sim/Não): Sim faz o 1º cliente do lote gerar um CNPJ de matriz e os demais clientes gerarem CNPJs de filial da mesma raiz (0002, 0003...); Não mantém o comportamento padrão (todo cliente com CNPJ de matriz independente)
+
+### 2.10.0 — 01/07/2026
+- Aba MDM (Cadastrar): cada envio de cadastro (POST) agora é registrado em `log/post_mdm_<data>.csv` (um arquivo por dia, criado automaticamente), com as colunas `data_hora`, `administrativeIdentifier`, `payload`, `status_code` e `retorno` (CSV separado por `;`, mesmo padrão já usado nas exportações Oracle)
+- O histórico registra tanto envios bem-sucedidos (status HTTP + corpo da resposta) quanto falhas de rede (status `ERRO` + mensagem da exceção)
+
+### 2.9.1 — 01/07/2026
+- Corrige caracteres especiais corrompidos nos endereços gerados (ex: "MinistÃ©rio" em vez de "Ministério"): a conversão do CSV de referência para `static/data/base_de_ceps.json` estava lendo o arquivo como Latin-1 quando na verdade ele já é UTF-8, causando "double-encoding". Os 3.431 registros foram regravados corretamente
+
+### 2.9.0 — 01/07/2026
+- Diversidade de e-mails automáticos muito maior: pool de nomes/sobrenomes ampliado (~8.400 combinações de nome+sobrenome), sufixo numérico agora sempre presente (antes saía vazio em 50% dos casos) e checagem para nunca repetir um e-mail já gerado na mesma sessão
+- Endereços automáticos passam a usar a base real de CEPs da aplicação de referência (3.431 registros reais, convertidos para `static/data/base_de_ceps.json` e servidos pelo Flask), em vez de listas fixas de exemplo
+- CEP, rua, bairro, cidade, UF e código IBGE agora vêm sempre do mesmo registro real (nunca são sorteados de forma independente uns dos outros)
+- Ao escolher manualmente uma UF, apenas endereços reais dessa UF são gerados (campo UF do endereço virou uma lista fechada com as 26 UFs presentes na base)
+- Ao escolher manualmente um tipo de CEP, apenas endereços desse tipo são gerados (quando existir na UF escolhida — a UF tem prioridade sobre o tipo nos raros casos em que a combinação não existe na base real)
+- Aplicadas as regras reais por tipo de CEP: `localidade` (sem rua/bairro específicos reais — usa um logradouro plausível), `caixaPostalComunitaria` (sem bairro/número/complemento) e `grandeUsuario`/`unidadeOperacional` (sem número/complemento)
+
+### 2.8.2 — 01/07/2026
+- Aba MDM (Cadastrar), seção Pessoa Física: CPF, Nome Completo, Data de Nascimento, Maior de 18 anos e Profissão agora vêm pré-selecionados por padrão
+- Ao voltar para PF (depois de ter escolhido PJ), o campo CPF é marcado automaticamente, no mesmo padrão já aplicado ao CNPJ ao escolher PJ
+
+### 2.8.1 — 01/07/2026
+- Aba MDM (Cadastrar): a lista de payloads agora exibe o `administrativeIdentifier` (CPF/RNE/Passaporte ou CNPJ) de cada cliente gerado, em vez de "Cliente N"
+- Adicionados os links "Selecionar todos" e "Limpar seleção" acima da lista de payloads (mantendo o comportamento padrão de já vir tudo selecionado após gerar)
+- Ao escolher PF ou PJ, a seção correspondente ("Pessoa Física" ou "Pessoa Jurídica") passa a ser exibida antes das demais seções do formulário
+- O campo CNPJ volta a vir pré-selecionado automaticamente ao escolher PJ (antes ficava desmarcado, pois a seleção inicial padrão é PF)
+- Os campos "E-mail Social Login" e "Origem Social Login" não vêm mais pré-selecionados por padrão
+
+### 2.8.0 — 01/07/2026
+- Aba MDM (Cadastrar): "Gerar Payloads" agora exibe os clientes gerados como uma lista (checkbox de envio, tipo PF/PJ e status), com cada item expansível ao clicar para mostrar o JSON completo
+- Novo botão "Enviar Selecionados": envia (POST) apenas os payloads marcados, um de cada vez, atualizando o status de cada item (código HTTP ou erro) assim que a resposta da API chega
+- Nova rota `/mdm-cadastrar` e função `cadastrar_cliente_mdm()` no backend, usando as credenciais já configuradas em `secure.properties`
+- Corrige o campo `socialLogin`: a API espera uma lista (`ArrayList`), mas o payload estava enviando um objeto único quando o e-mail de social login estava marcado, causando erro 400 ("JSON inválido... Cannot deserialize... ArrayList")
+
+### 2.7.2 — 01/07/2026
+- Nova área no topo da aba Cadastrar (MDM) para escolher o tipo de cliente (Pessoa Física ou Pessoa Jurídica) e a quantidade de clientes a gerar
+- Selecionar PF exibe a seção "Pessoa Física (Inhabitant)" e oculta "Pessoa Jurídica (Professional Organization)", e vice-versa; os campos-mestre da seção oculta são desmarcados automaticamente para não vazarem no payload
+- O botão "Gerar Payload" agora respeita a quantidade informada, gerando um array com N payloads (cada um com seus próprios valores automáticos)
+
+### 2.7.1 — 01/07/2026
+- Corrige a montagem do payload da aba MDM (Cadastrar): o "Gerar Payload" agora produz o JSON aninhado no formato real da API (`schema`/`fields`, blocos `inhabitant`/`professionalOrganization`, listas `emailAddresses`/`addresses`/`phones`, objetos de optin, `loyaltyProgram`, `leroyMerlinCreditCard`), com base nos exemplos reais de PF e PJ fornecidos
+- Campos "Automático" agora geram valores reais (CPF, CNPJ, nomes, e-mails, telefones, inscrição estadual) via geradores portados de `util.py`, em vez de gravar a string "Automatico" no payload
+- Endereço automático usa um gerador aproximado no navegador (a base real de CEPs só existe no servidor da aplicação de referência)
+
+### 2.7.0 — 01/07/2026
+- Nova aba **MDM** (Cadastro e Consulta de clientes na API MDM/Facade), com sub-abas "Cadastrar" e "Consultar"
+- Tela de Cadastro espelha a planilha `mdm_payloads.xlsm` (aplicação de referência), com checkbox de envio por campo
+- Blocos em destaque com flag + quantidade para Telefone, E-mail e Endereço (campos tipo lista)
+- Sub-grupos de Optin (Endereço, Telefone, SMS, Push, WhatsApp, E-mail) com auto-seleção ao marcar o bloco correspondente
+- Grupo LoyaltyProgram (não é lista, possui flag único)
+- Campos com opção Automático/Manual, preparados para preenchimento automático futuro (baseado nas funções de `util.py` da aplicação de referência)
+- Dados de conexão com a API MDM adicionados em `secure.properties` (`mdm_api_apikey`, `mdm_api_url`, `mdm_api_schema`)
+- Consulta de cliente (por CPF/CNPJ) já funcional via API Facade; envio de cadastro (POST) fica para uma próxima etapa
+
+### 2.0.0 — 27/06/2026
+- Aplicação migrada para janela própria (pywebview), fora do navegador
+- Redesign completo com identidade visual dos e-mails do Agent (azul `#1e3a5f`)
+- Header com logo, subtítulo e botão Sobre
+- Abas horizontais com indicador de aba ativa
+- Footer com versão dinâmica
+- Tela "Sobre" com renderização do `VERSAO_ATUAL_ARQUIVOS.md`
+- Sistema de versionamento MAJOR.MINOR.PATCH via `version.py`
+- Endpoint `/api/versao` para consulta programática
+
+### 1.0.0 — 28/11/2025
+- Versão inicial: Solicitar Logs, Exportar Oracle, Configurações
+- Interface via navegador (Flask + HTML)
 
 ---
 

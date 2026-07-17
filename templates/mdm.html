@@ -1,0 +1,1265 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>MDM</title>
+<link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+<style>
+    body { padding: 0 20px 30px; }
+    h2 { color: #1e3a5f; }
+
+    /* Sub-abas internas (Cadastrar / Consultar) */
+    .mdm-subtabs {
+        display: flex; gap: 0; margin: 10px 0 20px; border-bottom: 2px solid #ddd;
+    }
+    .mdm-subtab-btn {
+        background: none; border: none; border-bottom: 3px solid transparent;
+        padding: 10px 22px; cursor: pointer; font-weight: 600; color: #666; font-size: 0.95rem;
+    }
+    .mdm-subtab-btn.active { color: #1e3a5f; border-bottom-color: #4a90e2; }
+    .mdm-subtab-btn:hover { color: #1e3a5f; }
+    .mdm-content { display: none; }
+    .mdm-content.active { display: block; }
+
+    /* Seções simples (details) */
+    .mdm-section { margin-bottom: 16px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
+    .mdm-section > summary {
+        cursor: pointer; padding: 10px 14px; font-weight: 700; color: #1e3a5f;
+        background: #f0f4f8; border-radius: 6px;
+    }
+    .mdm-section .section-body { padding: 12px 16px; }
+
+    /* Área de Tipo de Cliente (PF/PJ) + quantidade */
+    .tipo-cliente-block { border-color: #e29b1e; }
+    .tipo-cliente-block .block-header { background: #e29b1e; }
+    .tipo-cliente-opcoes { display: flex; gap: 22px; flex-wrap: wrap; }
+    .tipo-cliente-radio { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #fff; cursor: pointer; }
+    .tipo-cliente-radio input { width: 16px; height: 16px; cursor: pointer; }
+    .presets-pj { flex-direction: column; align-items: flex-start; gap: 10px; border-top: 1px solid rgba(255,255,255,0.35); }
+    .presets-pj .tipo-cliente-opcoes { gap: 16px; }
+    .preset-label { color: #fff; font-weight: 700; min-width: 220px; }
+
+    /* Blocos em destaque: Endereço / Telefone / E-mail / LoyaltyProgram */
+    .mdm-block { margin-bottom: 16px; border: 1px solid #4a90e2; border-radius: 6px; overflow: hidden; }
+    .block-header {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 14px;
+        background: #1e3a5f; color: #fff; padding: 12px 16px;
+    }
+    .block-header label.field-check { color: #fff; font-weight: 700; }
+    .block-header .field-value input, .block-header .field-value select { background: #fff; }
+    .block-qtd { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+    .block-qtd input { width: 70px; padding: 5px; border-radius: 4px; border: 1px solid #ccc; }
+    .block-body { padding: 14px 16px; background: #f8fafc; display: none; }
+    .block-body.open { display: block; }
+
+    .subgroup { margin-top: 14px; padding: 10px 14px; border: 1px dashed #4a90e2; border-radius: 6px; background: #eef4fb; }
+    .subgroup h5 { margin: 0 0 8px; color: #1e3a5f; }
+
+    .field-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid #eee; }
+    .field-row:last-child { border-bottom: none; }
+    .field-check { display: flex; align-items: center; gap: 6px; min-width: 260px; font-weight: 600; color: #333; }
+    .field-value { display: flex; align-items: center; gap: 8px; flex: 1; }
+    .field-value input[type="text"], .field-value input[type="number"], .field-value select {
+        padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; min-width: 220px; font-size: 0.9rem;
+    }
+    .field-help { color: #888; font-style: italic; flex-basis: 100%; }
+
+    .actions-bar { margin: 18px 0; }
+    .actions-bar button {
+        background-color: #4a90e2; color: #fff; border: none; padding: 10px 18px;
+        border-radius: 4px; font-weight: 600; cursor: pointer; margin-right: 10px;
+    }
+    .actions-bar button:hover { background-color: #3a7bc8; }
+    .actions-bar button.btn-enviar { background-color: #2f8f4e; }
+    .actions-bar button.btn-enviar:hover { background-color: #257a40; }
+    .actions-bar .note { color: #888; font-size: 0.85rem; margin-top: 10px; }
+
+    /* Lista de payloads gerados */
+    .payload-item { border: 1px solid #ddd; border-radius: 6px; margin-bottom: 8px; background: #fff; overflow: hidden; }
+    .payload-item-header { display: flex; align-items: center; gap: 16px; padding: 10px 14px; cursor: pointer; }
+    .payload-item-header:hover { background: #f0f4f8; }
+    .payload-item-header input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+    .payload-item-tipo { font-weight: 700; color: #1e3a5f; min-width: 30px; }
+    .payload-item-index { color: #888; min-width: 60px; }
+    .payload-item-status { margin-left: auto; font-weight: 600; padding: 3px 10px; border-radius: 12px; font-size: 0.85rem; }
+    .status-nao-enviado { background: #eee; color: #666; }
+    .status-enviando { background: #fff3cd; color: #856404; }
+    .status-sucesso { background: #d4edda; color: #1e7e34; }
+    .status-erro { background: #fdecea; color: #b71c1c; }
+    .payload-item-body { display: none; padding: 12px 14px; border-top: 1px solid #eee; background: #f8fafc; }
+    .payload-item-body.open { display: block; }
+    .payload-item-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 0.82rem; max-height: 400px; overflow: auto; }
+
+    .payload-list-toolbar { gap: 16px; margin-bottom: 8px; }
+    .btn-link {
+        background: none; border: none; color: #4a90e2; font-weight: 600; font-size: 0.85rem;
+        cursor: pointer; padding: 0;
+    }
+    .btn-link:hover { text-decoration: underline; }
+
+    #consulta-resultado { width: 100%; min-height: 260px; margin-top: 10px; font-family: monospace; font-size: 0.85rem; }
+
+    .consulta-form { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+    .consulta-form input[type="text"] { flex: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+
+    .alerta { display: none; margin: 10px 0; padding: 10px 14px; border-radius: 4px; }
+    .alerta-erro { background: #fdecea; color: #b71c1c; border: 1px solid #f5c6cb; }
+    .alerta-sucesso { background: #eafaf1; color: #1e7e34; border: 1px solid #c3e6cb; }
+</style>
+<script>
+const MDM_SCHEMA = "{{ schema }}";
+
+// ---------------------------------------------------------------------
+// Geradores automáticos (porta de scripts_python/MDM/util.py)
+// ---------------------------------------------------------------------
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function escolher(arr) { return arr[randInt(0, arr.length - 1)]; }
+
+function gerarCPF() {
+    var d = [];
+    for (var i = 0; i < 9; i++) d.push(randInt(0, 9));
+    var soma = 0;
+    for (i = 0; i < 9; i++) soma += d[i] * (10 - i);
+    var d1 = 11 - (soma % 11); if (d1 > 9) d1 = 0;
+    d.push(d1);
+    soma = 0;
+    for (i = 0; i < 10; i++) soma += d[i] * (11 - i);
+    var d2 = 11 - (soma % 11); if (d2 > 9) d2 = 0;
+    d.push(d2);
+    return d.join('');
+}
+
+function charToVal(c) { return c.charCodeAt(0) - 48; }
+
+// raizFixa (8 caracteres): quando informada, reaproveita essa raiz em vez de
+// sortear uma nova — usado para gerar CNPJs de filial da mesma matriz.
+// numeroFilial (1-9999): 1 = matriz (0001), 2+ = filial (0002, 0003...).
+function gerarCNPJ(alfanumerico, raizFixa, numeroFilial) {
+    var pesosD1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    var pesosD2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    var filialStr = String(numeroFilial || 1).padStart(4, '0');
+    var raiz;
+    if (raizFixa) {
+        raiz = raizFixa.split('');
+    } else {
+        var chars = alfanumerico ? '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' : '0123456789';
+        do {
+            raiz = [];
+            for (var j = 0; j < 8; j++) raiz.push(escolher(chars.split('')));
+        } while (new Set(raiz).size === 1);
+    }
+    var todos = raiz.concat(filialStr.split(''));
+    var valores = todos.map(charToVal);
+    var soma = 0, i;
+    for (i = 0; i < 12; i++) soma += valores[i] * pesosD1[i];
+    var resto = soma % 11;
+    var d1 = resto < 2 ? 0 : 11 - resto;
+    soma = 0;
+    for (i = 0; i < 12; i++) soma += valores[i] * pesosD2[i];
+    soma += d1 * pesosD2[pesosD2.length - 1];
+    resto = soma % 11;
+    var d2 = resto < 2 ? 0 : 11 - resto;
+    return todos.join('') + String(d1) + String(d2);
+}
+
+var NOMES_M = ['Miguel', 'Davi', 'Gabriel', 'Arthur', 'Lucas', 'Matheus', 'Pedro', 'Enzo', 'Gustavo', 'Felipe', 'Rafael', 'Bernardo', 'Heitor', 'Guilherme', 'Samuel', 'João', 'Luiz', 'Fernando', 'Carlos', 'Bruno', 'Henrique', 'Eduardo', 'Daniel', 'Vinicius', 'Leonardo', 'Igor', 'Alexandre', 'Paulo', 'Thiago', 'Marcos', 'Ricardo', 'Diego', 'Antônio', 'José', 'Francisco', 'Raul', 'Otávio', 'Cauê', 'Breno', 'Ryan', 'Kevin', 'Nathan', 'Ian', 'Benjamin', 'Vitor Hugo', 'Sandro'];
+var NOMES_F = ['Sophia', 'Alice', 'Julia', 'Isabella', 'Manuela', 'Laura', 'Valentina', 'Helena', 'Maria', 'Eduarda', 'Lara', 'Beatriz', 'Mariana', 'Carolina', 'Lívia', 'Clara', 'Ana', 'Luiza', 'Rafaela', 'Isadora', 'Lorena', 'Yasmin', 'Lucia', 'Sarah', 'Emanuelly', 'Elisa', 'Gabriela', 'Cecília', 'Larissa', 'Fernanda', 'Amanda', 'Letícia', 'Vitória', 'Bianca', 'Camila', 'Luana', 'Patrícia', 'Angélica', 'Cintia', 'Esther', 'Olivia', 'Maitê', 'Heloísa', 'Agatha', 'Melissa', 'Rebeca', 'Tamires'];
+var SOBRENOMES = ['Silva', 'Santos', 'Oliveira', 'Souza', 'Rodrigues', 'Ferreira', 'Alves', 'Pereira', 'Lima', 'Gomes', 'Costa', 'Ribeiro', 'Martins', 'Carvalho', 'Almeida', 'Monteiro', 'Nascimento', 'Moreira', 'Mendes', 'Barbosa', 'Rocha', 'Cardoso', 'Teixeira', 'Cunha', 'Dias', 'Freitas', 'Moraes', 'Siqueira', 'Castro', 'Nunes', 'Pinto', 'Machado', 'Andrade', 'Barros', 'Campos', 'Borges', 'Vieira', 'Peixoto', 'Ramos', 'Correia', 'Rezende', 'Caldeira', 'Duarte', 'Tavares', 'Medeiros', 'Fonseca', 'Goulart', 'Britto', 'Leal', 'Xavier', 'Pires'];
+
+function gerarNomeCompleto() {
+    var genero = escolher(['m', 'f']);
+    var primeiro = escolher(genero === 'm' ? NOMES_M : NOMES_F);
+    var sobrenome = escolher(SOBRENOMES);
+    return primeiro + ' ' + sobrenome;
+}
+
+var SEGMENTOS_EMPRESA = {
+    'Tecnologia': ['TI', 'Tech', 'Digital', 'Inovação', 'Sistemas', 'Tecnologia'],
+    'Comércio': ['Comercial', 'Distribuição', 'Varejo', 'Atacado', 'Importação'],
+    'Indústria': ['Industrial', 'Manufatura', 'Produção', 'Fabril', 'Maquinários'],
+    'Serviços': ['Serviços', 'Consultoria', 'Assessoria', 'Soluções', 'Gestão', 'Transportes'],
+    'Alimentos': ['Alimentícios', 'Nutrição', 'Food', 'Gastronomia', 'Culinária']
+};
+var SOBRENOMES_EMPRESA = ['Silva', 'Santos', 'Oliveira', 'Souza', 'Pereira', 'Costa', 'Rodrigues', 'Almeida', 'Lima', 'Ferreira', 'Barbosa', 'Rocha', 'Machado', 'Vial', 'Correia'];
+var SUFIXOS_LEGAIS = ['LTDA', 'EIRELI', 'ME', 'S/A', '& Filhos', '& Associados'];
+var PREFIXOS_FANTASIA = ['Grupo', 'Central', 'Super', 'Mega', 'Global', 'BR'];
+var SUFIXOS_FANTASIA = ['Corporate', 'Solutions', 'Center', 'Express', 'Network', 'Brasil', 'Participações'];
+
+function gerarNomeEmpresa() {
+    var segmentos = Object.keys(SEGMENTOS_EMPRESA);
+    var segmento = escolher(segmentos);
+    var variacoes = SEGMENTOS_EMPRESA[segmento];
+    var sobrenome = escolher(SOBRENOMES_EMPRESA);
+    var razaoSocial = sobrenome + ' ' + segmento + ' ' + escolher(SUFIXOS_LEGAIS);
+    var estrategia = escolher([1, 2, 3]);
+    var fantasia;
+    if (estrategia === 1) {
+        fantasia = sobrenome + escolher(variacoes);
+    } else if (estrategia === 2) {
+        fantasia = escolher(PREFIXOS_FANTASIA) + ' ' + segmento + ' ' + escolher(SUFIXOS_FANTASIA);
+    } else {
+        var iniciais = (sobrenome[0] + segmento[0]).toUpperCase();
+        var complemento = escolher(['', ' ' + escolher(SUFIXOS_FANTASIA)]);
+        fantasia = iniciais + ' ' + variacoes[0] + complemento;
+    }
+    return [razaoSocial, fantasia];
+}
+
+var EMAIL_NOMES = ['maria', 'joao', 'carlos', 'ana', 'pedro', 'lucas', 'fernanda', 'jose', 'paulo', 'rafael', 'amanda', 'leticia', 'gabriel', 'beatriz', 'ricardo', 'felipe', 'paco', 'marcos', 'tatiana', 'eloise', 'rose', 'ubiratan', 'odirlei', 'danilo', 'rodrigo', 'victor', 'julio'];
+var EMAIL_SOBRENOMES = ['silva', 'souza', 'oliveira', 'santos', 'rodrigues', 'almeida', 'pereira', 'nascimento', 'lima', 'costa', 'ferreira', 'carvalho', 'gomes', 'mendes', 'rocha', 'lacerda', 'maldonado', 'miranda', 'paolli', 'machado', 'abreu'];
+
+function normalizarParaEmail(txt) {
+    return txt.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z]/g, '').toLowerCase();
+}
+
+// Amplia bastante o pool de nomes/sobrenomes reaproveitando as listas de nomes
+// completos (PF) normalizadas, além das listas dedicadas de e-mail.
+var EMAIL_NOMES_AMPLIADO = EMAIL_NOMES.concat(NOMES_M.map(normalizarParaEmail), NOMES_F.map(normalizarParaEmail));
+var EMAIL_SOBRENOMES_AMPLIADO = EMAIL_SOBRENOMES.concat(SOBRENOMES.map(normalizarParaEmail));
+
+// Evita repetir o mesmo e-mail dentro da mesma sessão de geração
+var EMAILS_JA_GERADOS = {};
+
+// Preset "Filial": quando ativo, o 1º cliente do lote recebe um CNPJ de matriz
+// e os demais recebem CNPJs de filial da mesma matriz (mesma raiz, filial 0002, 0003...)
+var FILIAL_ATIVO = false;
+var MATRIZ_CNPJ_RAIZ = null;
+
+function gerarEmailBase() {
+    var dominio = 'dirb.com';
+    var separadores = ['', '.', '_', '-'];
+    var p1 = escolher(EMAIL_NOMES_AMPLIADO), p2 = escolher(EMAIL_SOBRENOMES_AMPLIADO);
+    var sep = escolher(separadores);
+    // Sufixo numérico sempre presente (nunca vazio) e com alta entropia
+    var numero = String(randInt(100, 999999));
+    var padroes = [
+        p1 + sep + p2 + numero, p1 + numero + sep + p2 + numero, p2 + sep + p1 + numero,
+        numero + sep + p1, numero + sep + p2, p1 + sep + numero, p2 + sep + numero,
+        p1 + sep + numero + sep + p2, p2 + sep + numero + sep + p1
+    ];
+    var usuario = escolher(padroes).toLowerCase();
+    ['.', '_', '-'].forEach(function (ch) {
+        while (usuario.indexOf(ch + ch) !== -1) usuario = usuario.split(ch + ch).join(ch);
+    });
+    usuario = usuario.replace(/^[._-]+|[._-]+$/g, '');
+    if (!usuario) usuario = 'user' + randInt(100000, 999999);
+    return usuario + '@' + dominio;
+}
+
+function gerarEmail() {
+    var email, tentativas = 0;
+    do {
+        email = gerarEmailBase();
+        tentativas++;
+    } while (EMAILS_JA_GERADOS[email] && tentativas < 100);
+    EMAILS_JA_GERADOS[email] = true;
+    return email;
+}
+
+var CODIGOS_AREA = ['11', '12', '13', '14', '15', '16', '17', '18', '19', '21', '22', '24', '27', '28', '31', '32', '33', '34', '35', '37', '38', '41', '42', '43', '44', '45', '46', '47', '48', '49', '51', '53', '54', '55', '61', '62', '63', '64', '65', '66', '67', '68', '69', '71', '73', '74', '75', '77', '79', '81', '82', '83', '84', '85', '86', '87', '88', '89', '91', '92', '93', '94', '95', '96', '97', '98', '99'];
+
+function gerarTelefone() {
+    var area = escolher(CODIGOS_AREA);
+    var numero = '';
+    for (var i = 0; i < 8; i++) numero += String(randInt(0, 9));
+    return '+55' + area + '9' + numero;
+}
+
+function gerarPassaporte() {
+    var letras = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+    var l = escolher(letras) + escolher(letras);
+    var n = '';
+    for (var i = 0; i < 6; i++) n += String(randInt(0, 9));
+    return l + n;
+}
+
+function gerarRNE() {
+    var base = '';
+    for (var i = 0; i < 7; i++) base += String(randInt(0, 7));
+    var soma = 0;
+    for (i = 0; i < 7; i++) soma += parseInt(base[i], 10) * (7 - i);
+    var digito = 11 - (soma % 11);
+    if (digito >= 10) digito = 0;
+    return base.slice(0, 3) + base.slice(3, 6) + base.slice(6, 7) + String(digito);
+}
+
+function gerarInscricaoEstadual(uf) {
+    uf = (uf || '').toUpperCase();
+
+    function mg() {
+        var base = [];
+        for (var i = 0; i < 11; i++) base.push(randInt(0, 9));
+        var calc = base.slice(0, 3).concat([0]).concat(base.slice(3));
+        var soma = 0;
+        calc.forEach(function (num, idx) {
+            var peso = idx % 2 === 0 ? 1 : 2;
+            var produto = num * peso;
+            soma += Math.floor(produto / 10) + (produto % 10);
+        });
+        var d1 = (10 - (soma % 10)) % 10;
+        var seg = base.concat([d1]);
+        var pesos2 = [3, 2, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2];
+        var soma2 = 0;
+        for (i = 0; i < seg.length; i++) soma2 += seg[i] * pesos2[i];
+        var resto = soma2 % 11;
+        var d2 = (resto === 0 || resto === 1) ? 0 : 11 - resto;
+        return base.concat([d1, d2]).join('');
+    }
+
+    function sp() {
+        var base = String(randInt(Math.pow(10, 7), Math.pow(10, 8) - 1));
+        var pesosD1 = [1, 3, 4, 5, 6, 7, 8, 10];
+        var soma = 0, i;
+        for (i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesosD1[i];
+        var r = soma % 11;
+        var d1 = r !== 10 ? r : 0;
+        var filial = '11';
+        var numero11 = base + String(d1) + filial;
+        var pesosD2 = [3, 2, 10, 9, 8, 7, 6, 5, 4, 3, 2];
+        var soma2 = 0;
+        for (i = 0; i < numero11.length; i++) soma2 += parseInt(numero11[i], 10) * pesosD2[i];
+        var r2 = soma2 % 11;
+        var d2 = r2 !== 10 ? r2 : 0;
+        return base + String(d1) + filial + String(d2);
+    }
+
+    function df() {
+        var prefixo = '07';
+        var baseRandom = '';
+        var i;
+        for (i = 0; i < 9; i++) baseRandom += String(randInt(0, 9));
+        var base = prefixo + baseRandom;
+        var pesosRev = [2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4].slice().reverse();
+        var soma = 0;
+        for (i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesosRev[i];
+        var resto = soma % 11;
+        var dv1 = (resto === 0 || resto === 1) ? 0 : 11 - resto;
+        base = base + String(dv1);
+        pesosRev = [2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4, 5].slice().reverse();
+        soma = 0;
+        for (i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesosRev[i];
+        resto = soma % 11;
+        var dv2 = (resto === 0 || resto === 1) ? 0 : 11 - resto;
+        return base + String(dv2);
+    }
+
+    function to() {
+        var prefixo = '29';
+        var baseRandom = String(randInt(0, Math.pow(10, 6) - 1)).padStart(6, '0');
+        var base = prefixo + baseRandom;
+        var tipoEmpresa = escolher(['01', '02', '03', '99']);
+        var pesos = [9, 8, 7, 6, 5, 4, 3, 2];
+        var soma = 0;
+        for (var i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesos[i];
+        var resto = soma % 11;
+        var dv = (resto === 0 || resto === 1) ? 0 : 11 - resto;
+        return prefixo + tipoEmpresa + baseRandom + String(dv);
+    }
+
+    function mt() {
+        var base = '';
+        var i;
+        for (i = 0; i < 10; i++) base += String(randInt(0, 9));
+        var pesos = [3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+        var soma = 0;
+        for (i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesos[i];
+        var dv = 11 - (soma % 11);
+        return base + (dv < 10 ? String(dv) : '0');
+    }
+
+    function ro() {
+        var num5 = randInt(0, 999999999);
+        var base5 = String(num5).padStart(9, '0');
+        var base13 = base5.padStart(13, '0');
+        var pesos = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+        var soma = 0;
+        for (var i = 0; i < base13.length; i++) soma += parseInt(base13[i], 10) * pesos[i];
+        var resto = soma % 11;
+        var dv = 11 - resto;
+        if (dv >= 10) dv -= 10;
+        return base13 + String(dv);
+    }
+
+    var geradores = { SP: sp, MG: mg, DF: df, TO: to, MT: mt, RO: ro };
+    if (!(uf in geradores)) return '00000000000';
+    return geradores[uf]();
+}
+
+// ---------------------------------------------------------------------
+// Endereços: usa a base real de CEPs (mesma fonte do script de referência,
+// scripts_python/MDM/Entrada/base_de_ceps.csv, servida como JSON estático)
+// para gerar endereços reais e coerentes (CEP + rua + bairro + cidade + UF
+// sempre vêm do mesmo registro). Aplica as mesmas regras por tipo de CEP de
+// util.gerar_endereco(). Só cai no fallback simplificado abaixo se a base
+// real não puder ser carregada.
+// ---------------------------------------------------------------------
+var RUAS_FALLBACK = ['Rua das Flores', 'Avenida Paulista', 'Travessa da Esperança', 'Praça da Sé', 'Alameda Santos', 'Rodovia Presidente Dutra'];
+var BAIRROS_FALLBACK = ['Centro', 'Jardim Paulista', 'Vila Madalena', 'Copacabana', 'Barra da Tijuca', 'Boa Vista'];
+var CIDADES_UF_FALLBACK = [['São Paulo', 'SP'], ['Rio de Janeiro', 'RJ'], ['Belo Horizonte', 'MG'], ['Brasília', 'DF'], ['Palmas', 'TO'], ['Cuiabá', 'MT'], ['Porto Velho', 'RO']];
+var TIPOS_CEP_VALIDOS = ['grandeUsuario', 'localidade', 'logradouro', 'unidadeOperacional', 'caixaPostalComunitaria'];
+
+var CEP_DATASET = null;
+
+async function carregarDatasetCeps() {
+    if (CEP_DATASET) return CEP_DATASET;
+    try {
+        var resp = await fetch('{{ url_for("static", filename="data/base_de_ceps.json") }}');
+        CEP_DATASET = await resp.json();
+    } catch (e) {
+        console.warn('Não foi possível carregar a base de CEPs; usando fallback simplificado.', e);
+        CEP_DATASET = [];
+    }
+    return CEP_DATASET;
+}
+
+// Escolhe um registro real, respeitando a UF quando informada (regra
+// prioritária) e o tipo de CEP quando existir para essa UF.
+function escolherRegistroCep(ufFiltro, tipoFiltro) {
+    var pool = CEP_DATASET || [];
+    if (ufFiltro && ufFiltro !== 'Automatico') {
+        pool = pool.filter(function (r) { return r.federatedUnit === ufFiltro; });
+    }
+    if (pool.length === 0) return null;
+
+    if (tipoFiltro && tipoFiltro !== 'Automatico') {
+        var poolComTipo = pool.filter(function (r) { return r.postalCodeTypeName === tipoFiltro; });
+        if (poolComTipo.length > 0) pool = poolComTipo;
+        // Se essa UF não tiver nenhum CEP desse tipo na base real, mantém a UF
+        // (regra prioritária) e usa outro tipo real disponível para ela.
+    }
+    return pool[randInt(0, pool.length - 1)];
+}
+
+function gerarEndereco(ufSelecionado, tipoSelecionado) {
+    var registro = escolherRegistroCep(ufSelecionado, tipoSelecionado);
+
+    if (!registro) {
+        // Fallback simplificado (aproximado), só usado se a base real não carregou
+        var cidadeUf = escolher(CIDADES_UF_FALLBACK);
+        registro = {
+            postalCodeIdentifier: String(randInt(1000000, 99999999)).padStart(8, '0'),
+            postalCodeTypeName: (tipoSelecionado && tipoSelecionado !== 'Automatico') ? tipoSelecionado : escolher(TIPOS_CEP_VALIDOS),
+            postalCodeDescription: '',
+            streetName: escolher(RUAS_FALLBACK),
+            districtName: escolher(BAIRROS_FALLBACK),
+            cityName: cidadeUf[0],
+            federatedUnit: (ufSelecionado && ufSelecionado !== 'Automatico') ? ufSelecionado : cidadeUf[1],
+            cityIbgeCodeIdentifier: String(randInt(1000000, 9999999))
+        };
+    }
+
+    var tipo = registro.postalCodeTypeName;
+    var endereco = {
+        postalCode: String(registro.postalCodeIdentifier).padStart(8, '0'),
+        postalCodeType: tipo,
+        postalCodeDescription: registro.postalCodeDescription || '',
+        streetName: registro.streetName || '',
+        suburb: registro.districtName || '',
+        cityName: registro.cityName || '',
+        province: registro.federatedUnit || '',
+        ibgeCityCode: String(registro.cityIbgeCodeIdentifier || ''),
+        streetNumber: '',
+        complement: ''
+    };
+
+    // Regras específicas por tipo de CEP (mesma lógica de util.gerar_endereco):
+    // - localidade: CEP cobre a cidade toda, sem rua/bairro específicos reais;
+    //   usa uma rua/bairro plausível e número/complemento gerados
+    // - caixaPostalComunitaria: sem bairro, sem número, sem complemento
+    // - unidadeOperacional/grandeUsuario: sem número, sem complemento
+    // - demais (logradouro): rua/bairro reais da base + número/complemento gerados
+    if (tipo === 'localidade') {
+        endereco.streetName = escolher(RUAS_FALLBACK);
+        endereco.suburb = escolher(BAIRROS_FALLBACK);
+        endereco.streetNumber = String(randInt(1, 999));
+        endereco.complement = escolher(['', '', '', 'Apto 101', 'Bloco B', 'Casa 2', 'Sala 303', 'Fundos']);
+    } else if (tipo === 'caixaPostalComunitaria') {
+        endereco.suburb = '';
+        endereco.streetNumber = '';
+        endereco.complement = '';
+    } else if (tipo === 'unidadeOperacional' || tipo === 'grandeUsuario') {
+        endereco.streetNumber = '';
+        endereco.complement = '';
+    } else {
+        endereco.streetNumber = String(randInt(1, 999));
+        endereco.complement = escolher(['', '', '', 'Apto 101', 'Bloco B', 'Casa 2', 'Sala 303', 'Fundos']);
+    }
+
+    return endereco;
+}
+
+// ---------------------------------------------------------------------
+// Leitura dos campos do formulário e montagem do payload (mesma lógica de
+// scripts_python/MDM/mdm_payloads.py -> gera_payload_idb())
+// ---------------------------------------------------------------------
+function lerCampo(nome) {
+    var flagEl = document.querySelector('#form-cadastro [name="flag__' + nome + '"]');
+    var flag = flagEl ? flagEl.checked : false;
+    var modeSel = document.querySelector('#form-cadastro .mode-select[data-target="val__' + nome + '"]');
+    var valEl = document.querySelector('#form-cadastro [name="val__' + nome + '"]');
+    var qtdEl = document.querySelector('#form-cadastro [name="qtd__' + nome + '"]');
+    var value = null;
+
+    if (modeSel && modeSel.value !== 'Manual') {
+        // Cobre tanto text_auto (Automatico/Manual) quanto select_manual
+        // (ex: Automatico/Alfanumerico/Manual) — só lê o input manual quando
+        // o modo selecionado for especificamente "Manual".
+        value = modeSel.value;
+    } else if (valEl) {
+        value = valEl.value;
+        if (valEl.tagName === 'SELECT' && (value === 'true' || value === 'false')) {
+            value = (value === 'true');
+        }
+    } else if (qtdEl) {
+        value = Number(qtdEl.value);
+    }
+    return { flag: flag, value: value };
+}
+
+function lerQuantidade(nomeBloco) {
+    var el = document.querySelector('#form-cadastro [name="qtd__' + nomeBloco + '"]');
+    return el ? Math.max(1, Number(el.value) || 1) : 1;
+}
+
+function montarOptin(prefixo, dataIso) {
+    var ind = lerCampo(prefixo + 'Indicator');
+    if (!ind.flag) return null;
+    var optin = { optinIndicator: ind.value };
+    var dt = lerCampo(prefixo + 'Datetime');
+    if (dt.flag) optin.optinDatetime = dt.value === 'Automatico' ? dataIso : String(dt.value);
+    var app = lerCampo(prefixo + 'PerformingApp');
+    if (app.flag) optin.performingApp = app.value;
+    return optin;
+}
+
+function montarPayload(indiceCliente) {
+    indiceCliente = indiceCliente || 0;
+    var now = new Date();
+    var dataIso = now.toISOString().slice(0, 23) + 'Z';
+    var dataPura = now.toISOString().slice(0, 10);
+    var fields = {};
+    var administrativeIdentifier = null;
+
+    var businessUnit = lerCampo('businessUnitIdentifier');
+    if (businessUnit.flag) fields.businessUnitIdentifier = Number(businessUnit.value);
+
+    var creationDate = lerCampo('creationDate');
+    if (creationDate.flag) fields.creationDate = creationDate.value === 'Automatico' ? dataPura : String(creationDate.value);
+
+    // Pessoa Física (inhabitant)
+    var cpf = lerCampo('inhabitantCpf'), passaporte = lerCampo('inhabitantPassportNumber'), rne = lerCampo('inhabitantRne');
+    if (cpf.flag || passaporte.flag || rne.flag) {
+        var inhabitant = { administrativeIdentifier: {} };
+        if (cpf.flag) {
+            inhabitant.administrativeIdentifier.cpf = cpf.value === 'Automatico' ? gerarCPF() : String(cpf.value);
+            administrativeIdentifier = inhabitant.administrativeIdentifier.cpf;
+        }
+        if (passaporte.flag) {
+            inhabitant.administrativeIdentifier.passportNumber = passaporte.value === 'Automatico' ? gerarPassaporte() : String(passaporte.value);
+            administrativeIdentifier = inhabitant.administrativeIdentifier.passportNumber;
+        }
+        if (rne.flag) {
+            inhabitant.administrativeIdentifier.rne = rne.value === 'Automatico' ? gerarRNE() : String(rne.value);
+            administrativeIdentifier = inhabitant.administrativeIdentifier.rne;
+        }
+
+        var colab = lerCampo('inhabitantCollaboratorIdentifier');
+        if (colab.flag) inhabitant.collaboratorIdentifier = colab.value === 'Automatico' ? randInt(50000000, 50099999) : Number(colab.value);
+
+        var nascimento = lerCampo('inhabitantBirthDate');
+        if (nascimento.flag) inhabitant.birthDate = String(nascimento.value);
+
+        var nomeCompleto = lerCampo('inhabitantFullName');
+        if (nomeCompleto.flag) inhabitant.fullName = nomeCompleto.value === 'Automatico' ? gerarNomeCompleto() : String(nomeCompleto.value);
+
+        var maior18 = lerCampo('inhabitantOver18YearsIndicator');
+        if (maior18.flag) inhabitant.over18YearsIndicator = maior18.value;
+
+        var profissao = lerCampo('inhabitantProfessionName');
+        if (profissao.flag) inhabitant.professionName = profissao.value;
+
+        var ieNumPF = lerCampo('inhabitantStateRegistrationNumber'), ieUfPF = lerCampo('inhabitantStateRegistrationFederatedUnit');
+        if (ieNumPF.flag || ieUfPF.flag) {
+            var ufPF = ieUfPF.value === 'Automatico' ? escolher(['SP', 'DF', 'TO', 'MT', 'MG', 'RO']) : String(ieUfPF.value);
+            inhabitant.stateRegistration = {};
+            if (ieNumPF.flag) inhabitant.stateRegistration.number = ieNumPF.value === 'Automatico' ? gerarInscricaoEstadual(ufPF) : String(ieNumPF.value);
+            if (ieUfPF.flag) inhabitant.stateRegistration.federatedUnit = ufPF;
+        }
+        fields.inhabitant = inhabitant;
+    }
+
+    // Pessoa Jurídica (professionalOrganization)
+    var cnpjRaw = lerCampo('professionalOrganizationCnpj');
+    if (cnpjRaw.flag) {
+        var cnpj;
+        if (cnpjRaw.value === 'Automatico' || cnpjRaw.value === 'Alfanumerico') {
+            var alfanumerico = cnpjRaw.value === 'Alfanumerico';
+            if (FILIAL_ATIVO && indiceCliente > 0 && MATRIZ_CNPJ_RAIZ) {
+                // 2º cliente em diante: CNPJ de filial da mesma matriz do 1º cliente
+                cnpj = gerarCNPJ(alfanumerico, MATRIZ_CNPJ_RAIZ, indiceCliente + 1);
+            } else {
+                cnpj = gerarCNPJ(alfanumerico);
+                if (FILIAL_ATIVO && indiceCliente === 0) {
+                    MATRIZ_CNPJ_RAIZ = cnpj.substring(0, 8);
+                }
+            }
+        } else {
+            cnpj = cnpjRaw.value ? String(cnpjRaw.value) : gerarCNPJ(true);
+        }
+        var nomesEmpresa = gerarNomeEmpresa();
+        administrativeIdentifier = cnpj;
+
+        var org = { administrativeIdentifier: { cnpj: cnpj }, stateRegistration: {} };
+
+        var ieUfPJ = lerCampo('professionalOrganizationStateRegistrationFederatedUnit');
+        var ieNumPJ = lerCampo('professionalOrganizationStateRegistrationNumber');
+        var ieStatusPJ = lerCampo('professionalOrganizationStateRegistrationStatus');
+        var ufPJ = ieUfPJ.value === 'Automatico' ? escolher(['SP', 'DF', 'TO', 'MT', 'MG', 'RO']) : String(ieUfPJ.value);
+
+        if (ieUfPJ.flag || ieNumPJ.flag || ieStatusPJ.flag) {
+            var numeroObj = {};
+            if (ieUfPJ.flag) numeroObj.federatedUnit = ufPJ;
+            if (ieNumPJ.flag) numeroObj.number = ieNumPJ.value === 'Automatico' ? gerarInscricaoEstadual(ufPJ) : String(ieNumPJ.value);
+            if (ieStatusPJ.flag) numeroObj.status = ieStatusPJ.value;
+            org.stateRegistration.numbers = [numeroObj];
+        } else {
+            org.stateRegistration.numbers = [];
+        }
+        var ieLastCheckPJ = lerCampo('professionalOrganizationStateRegistrationLastCheckDate');
+        if (ieLastCheckPJ.flag) org.stateRegistration.lastCheckDate = ieLastCheckPJ.value === 'Automatico' ? dataIso : String(ieLastCheckPJ.value);
+        var ieExemptPJ = lerCampo('professionalOrganizationStateRegistrationExemptIndicator');
+        if (ieExemptPJ.flag) org.stateRegistration.exemptIndicator = ieExemptPJ.value;
+
+        var razaoSocial = lerCampo('professionalOrganizationRegisteredName');
+        if (razaoSocial.flag) org.registeredName = razaoSocial.value === 'Automatico' ? nomesEmpresa[0] : String(razaoSocial.value);
+        var nomeFantasia = lerCampo('professionalOrganizationCommercialName');
+        if (nomeFantasia.flag) org.commercialName = nomeFantasia.value === 'Automatico' ? nomesEmpresa[1] : String(nomeFantasia.value);
+        var porte = lerCampo('professionalOrganizationSize');
+        if (porte.flag) org.size = porte.value;
+        var statusCnpj = lerCampo('professionalOrganizationStatus');
+        if (statusCnpj.flag) org.status = statusCnpj.value;
+        var lastCheckCnpj = lerCampo('professionalOrganizationLastCheckDate');
+        if (lastCheckCnpj.flag) org.lastCheckDate = lastCheckCnpj.value === 'Automatico' ? dataIso : String(lastCheckCnpj.value);
+        var salesEnable = lerCampo('professionalOrganizationSalesEnableIndicator');
+        if (salesEnable.flag) org.salesEnableIndicator = salesEnable.value;
+        var enableInd = lerCampo('professionalOrganizationEnableIndicator');
+        if (enableInd.flag) org.enableIndicator = enableInd.value;
+
+        var cnae = lerCampo('professionalOrganizationRegisteredActivityCode');
+        if (cnae.flag) {
+            var qtdCnae = Number(cnae.value) || 1;
+            org.registeredActivity = [];
+            for (var i = 0; i < qtdCnae; i++) {
+                org.registeredActivity.push({
+                    code: String(randInt(1000000, 9999999)),
+                    mainIndicator: i === 0,
+                    description: '(gerado automaticamente)'
+                });
+            }
+        }
+        fields.professionalOrganization = org;
+    }
+
+    // E-mails (lista)
+    var emailMaster = lerCampo('email');
+    if (emailMaster.flag) {
+        var qtdEmail = lerQuantidade('email');
+        var contactNameE = lerCampo('emailContactName');
+        var credencial = lerCampo('emailIdentifiedUserCredentialIndicator');
+        var nota = lerCampo('emailInvoiceSubmissionIndicator');
+        var origemE = lerCampo('emailExternalSource');
+        var informadoE = lerCampo('emailInformedbyClientIndicator');
+        var validacao = lerCampo('emailValildationStatus');
+        var listaEmail = [];
+        for (var ie = 0; ie < qtdEmail; ie++) {
+            var itemEmail = { email: emailMaster.value === 'Automatico' ? gerarEmail() : String(emailMaster.value) };
+            if (validacao.flag) itemEmail.validationStatus = validacao.value;
+            if (informadoE.flag) itemEmail.informedByClientIndicator = informadoE.value;
+            if (contactNameE.flag) itemEmail.contactName = contactNameE.value === 'Automatico' ? gerarNomeCompleto() : String(contactNameE.value);
+            if (origemE.flag) itemEmail.externalSource = origemE.value;
+            if (credencial.flag && ie === 0) itemEmail.identifiedUserCredentialIndicator = credencial.value === 'Automatico' ? true : credencial.value;
+            if (nota.flag) itemEmail.invoiceSubmissionIndicator = nota.value === 'Automatico' ? (ie === 0) : nota.value;
+            listaEmail.push(itemEmail);
+        }
+        fields.emailAddresses = listaEmail;
+    }
+
+    // Endereços (lista)
+    var addrMaster = lerCampo('addressPostalCode');
+    if (addrMaster.flag) {
+        var qtdEndereco = lerQuantidade('address');
+        var campos = {};
+        ['addressIdentifier', 'addressStreetName', 'addressStreetNumber', 'addressComplement', 'addressSuburb', 'addressCityName',
+            'addressProvince', 'addressPostalCodeType', 'addressPostalCodeDescription', 'addressIbgeCityCode', 'addressCountry',
+            'addressNickname', 'addressReferencePoint', 'addressExternalSource', 'addressGardenIndicator', 'addressPoolIndicator',
+            'mainAddressIndicator', 'addressClientInformedIndicator'].forEach(function (n) { campos[n] = lerCampo(n); });
+        var listaEndereco = [];
+        for (var ia = 0; ia < qtdEndereco; ia++) {
+            var gerado = gerarEndereco(campos.addressProvince.value, campos.addressPostalCodeType.value);
+            var itemEndereco = { postalCode: addrMaster.value === 'Automatico' ? gerado.postalCode : String(addrMaster.value) };
+            if (campos.addressIdentifier.flag) itemEndereco.identifier = campos.addressIdentifier.value;
+            if (campos.addressStreetName.flag) itemEndereco.streetName = campos.addressStreetName.value === 'Automatico' ? gerado.streetName : String(campos.addressStreetName.value);
+            if (campos.addressStreetNumber.flag) itemEndereco.streetNumber = campos.addressStreetNumber.value === 'Automatico' ? gerado.streetNumber : String(campos.addressStreetNumber.value);
+            if (campos.addressComplement.flag) itemEndereco.complement = campos.addressComplement.value === 'Automatico' ? gerado.complement : String(campos.addressComplement.value);
+            if (campos.addressSuburb.flag) itemEndereco.suburb = campos.addressSuburb.value === 'Automatico' ? gerado.suburb : String(campos.addressSuburb.value);
+            if (campos.addressCityName.flag) itemEndereco.cityName = campos.addressCityName.value === 'Automatico' ? gerado.cityName : String(campos.addressCityName.value);
+            // province e postalCodeType sempre refletem o registro real escolhido (gerado),
+            // garantindo que CEP/rua/bairro/cidade/UF/tipo permaneçam coerentes entre si
+            if (campos.addressProvince.flag) itemEndereco.province = gerado.province;
+            if (campos.addressPostalCodeType.flag) itemEndereco.postalCodeType = gerado.postalCodeType;
+            if (campos.addressPostalCodeDescription.flag) itemEndereco.postalCodeDescription = campos.addressPostalCodeDescription.value === 'Automatico' ? gerado.postalCodeDescription : String(campos.addressPostalCodeDescription.value);
+            if (campos.addressIbgeCityCode.flag) itemEndereco.ibgeCityCode = campos.addressIbgeCityCode.value === 'Automatico' ? gerado.ibgeCityCode : String(campos.addressIbgeCityCode.value);
+            if (campos.addressCountry.flag) itemEndereco.country = campos.addressCountry.value === 'Automatico' ? 'BR' : String(campos.addressCountry.value);
+            if (campos.addressNickname.flag) itemEndereco.nickname = campos.addressNickname.value === 'Automatico' ? gerarNomeCompleto() : String(campos.addressNickname.value);
+            if (campos.addressReferencePoint.flag) itemEndereco.referencePoint = String(campos.addressReferencePoint.value);
+            if (campos.addressExternalSource.flag) itemEndereco.externalSource = String(campos.addressExternalSource.value);
+            if (campos.addressGardenIndicator.flag) itemEndereco.gardenIndicator = campos.addressGardenIndicator.value;
+            if (campos.addressPoolIndicator.flag) itemEndereco.poolIndicator = campos.addressPoolIndicator.value;
+            if (campos.mainAddressIndicator.flag) {
+                itemEndereco.mainAddressIndicator = campos.mainAddressIndicator.value === 'Automatico' ? (ia === 0) : campos.mainAddressIndicator.value;
+            }
+            if (campos.addressClientInformedIndicator.flag) {
+                itemEndereco.clientInformedIndicator = campos.addressClientInformedIndicator.value === 'Automatico' ? (ia === 0) : campos.addressClientInformedIndicator.value;
+            }
+            listaEndereco.push(itemEndereco);
+        }
+        fields.addresses = listaEndereco;
+    }
+
+    // Telefones (lista)
+    var phoneMaster = lerCampo('phoneNumber');
+    if (phoneMaster.flag) {
+        var qtdTelefone = lerQuantidade('phone');
+        var contactNameT = lerCampo('phoneContactName'), mainInd = lerCampo('mainPhoneIndicator');
+        var origemT = lerCampo('phoneExternalSource'), informadoT = lerCampo('phoneInformedByClientIndicator');
+        var listaTelefone = [];
+        for (var it = 0; it < qtdTelefone; it++) {
+            var itemTelefone = { number: phoneMaster.value === 'Automatico' ? gerarTelefone() : String(phoneMaster.value) };
+            if (contactNameT.flag) itemTelefone.contactName = contactNameT.value === 'Automatico' ? gerarNomeCompleto() : String(contactNameT.value);
+            if (origemT.flag) itemTelefone.externalSource = origemT.value;
+            if (informadoT.flag) itemTelefone.informedByClientIndicator = informadoT.value;
+            itemTelefone.mainPhoneIndicator = mainInd.flag ? (mainInd.value === 'Automatico' ? (it === 0) : mainInd.value) : false;
+            listaTelefone.push(itemTelefone);
+        }
+        fields.phones = listaTelefone;
+    }
+
+    // Programa de Fidelidade (loyaltyProgram)
+    var loyaltyStatus = lerCampo('loyaltyProgramStatus');
+    if (loyaltyStatus.flag) {
+        var loyalty = { professionalAssociation: {}, adhesionOptin: {} };
+        loyalty.status = Number(loyaltyStatus.value);
+        var tipoLoyalty = lerCampo('loyaltyProgramType'); if (tipoLoyalty.flag) loyalty.type = tipoLoyalty.value;
+        var origemLoyalty = lerCampo('loyaltyProgramCreateSource'); if (origemLoyalty.flag) loyalty.createSource = origemLoyalty.value;
+        var dataCriacaoLoyalty = lerCampo('loyaltyProgramStatusloyaltyCreationDate');
+        if (dataCriacaoLoyalty.flag) loyalty.statusInclusionDate = dataCriacaoLoyalty.value === 'Automatico' ? dataIso : String(dataCriacaoLoyalty.value);
+        var leadInd = lerCampo('loyaltyProgramLeadIndicator'); if (leadInd.flag) loyalty.leadIndicator = leadInd.value;
+        var assocDoc = lerCampo('loyaltyProgramProfessionalAssociationDocumentationStatus');
+        if (assocDoc.flag) loyalty.professionalAssociation.documentationStatus = assocDoc.value;
+        var assocNome = lerCampo('loyaltyProgramProfessionalAssociationName');
+        if (assocNome.flag) loyalty.professionalAssociation.name = assocNome.value;
+        var assocReg = lerCampo('loyaltyProgramProfessionalAssociationRegistrationNumber');
+        if (assocReg.flag) loyalty.professionalAssociation.registrationNumber = assocReg.value;
+        var adhDate = lerCampo('loyaltyProgramAdhesionOptinDatetime');
+        if (adhDate.flag) loyalty.adhesionOptin.optinDatetime = adhDate.value === 'Automatico' ? dataIso : String(adhDate.value);
+        var adhInd = lerCampo('loyaltyProgramAdhesionOptinIndicator');
+        if (adhInd.flag) {
+            loyalty.adhesionOptin.optinIndicator = adhInd.value;
+            var adhApp = lerCampo('loyaltyProgramAdhesionOptinPerformingApp');
+            loyalty.adhesionOptin.performingApp = adhApp.value;
+        }
+        fields.loyaltyProgram = loyalty;
+    }
+
+    // Optins
+    var emailOptin = montarOptin('emailOptin', dataIso); if (emailOptin) fields.emailOptin = emailOptin;
+    var phoneOptin = montarOptin('phoneNumberOptin', dataIso); if (phoneOptin) fields.phoneNumberOptin = phoneOptin;
+    var smsOptin = montarOptin('smsOptin', dataIso); if (smsOptin) fields.smsOptin = smsOptin;
+    var pushOptin = montarOptin('pushNotificationOptin', dataIso); if (pushOptin) fields.pushNotificationOptin = pushOptin;
+    var whatsOptin = montarOptin('whatsAppOptin', dataIso); if (whatsOptin) fields.whatsAppOptin = whatsOptin;
+    var addrOptin = montarOptin('directMailOptin', dataIso); if (addrOptin) fields.directMailOptin = addrOptin;
+
+    // Dados básicos finais
+    var ldapCriacao = lerCampo('creationUserLDAPNumber'); if (ldapCriacao.flag) fields.creationUserLDAPNumber = Number(ldapCriacao.value);
+    var lojaPref = lerCampo('preferenceStoreIdentifier'); if (lojaPref.flag) fields.preferenceStoreIdentifier = String(lojaPref.value);
+    var clienteInd = lerCampo('customerIndicator'); if (clienteInd.flag) fields.customerIndicator = clienteInd.value;
+    var interesse = lerCampo('interestAreaName'); if (interesse.flag) fields.interestAreaName = [interesse.value];
+    var diy = lerCampo('DIYRelationType'); if (diy.flag) fields.DIYRelationType = diy.value;
+    var decor = lerCampo('homeDecorKnowledgeLevel'); if (decor.flag) fields.homeDecorKnowledgeLevel = decor.value;
+
+    var socialEmail = lerCampo('socialLoginEmail'), socialSource = lerCampo('socialLoginSource');
+    if (socialEmail.flag || socialSource.flag) {
+        var socialItem = {};
+        if (socialEmail.flag) socialItem.email = socialEmail.value === 'Automatico' ? gerarEmail() : String(socialEmail.value);
+        if (socialSource.flag) socialItem.source = socialSource.value;
+        fields.socialLogin = [socialItem];
+    }
+
+    var lojaCriacao = lerCampo('creationStoreIdentifier'); if (lojaCriacao.flag) fields.creationStoreIdentifier = String(lojaCriacao.value);
+    var criadoPor = lerCampo('createdByApp'); if (criadoPor.flag) fields.createdByApp = criadoPor.value;
+    var atualizadoPor = lerCampo('updatedByApp'); if (atualizadoPor.flag) fields.updatedByApp = atualizadoPor.value;
+    var ldapAtualizacao = lerCampo('lastUpdateUserLDAPNumber'); if (ldapAtualizacao.flag) fields.lastUpdateUserLDAPNumber = Number(ldapAtualizacao.value);
+    var lojaAtualizacao = lerCampo('lastUpdateStoreIdentifier'); if (lojaAtualizacao.flag) fields.lastUpdateStoreIdentifier = String(lojaAtualizacao.value);
+
+    var cartaoStatus = lerCampo('leroyMerlinCreditCardStatusName');
+    var cartaoCategoria = lerCampo('leroyMerlinCreditCardCategoryIdentifier');
+    if (cartaoStatus.flag || cartaoCategoria.flag) {
+        fields.leroyMerlinCreditCard = {};
+        if (cartaoStatus.flag) fields.leroyMerlinCreditCard.statusName = cartaoStatus.value;
+        if (cartaoCategoria.flag) fields.leroyMerlinCreditCard.categoryIdentifier = Number(cartaoCategoria.value);
+    }
+
+    return {
+        payload: { schema: MDM_SCHEMA, fields: fields },
+        administrativeIdentifier: administrativeIdentifier
+    };
+}
+
+function abrirSubAbaMdm(evento, id) {
+    evento.preventDefault();
+    document.querySelectorAll('.mdm-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.mdm-subtab-btn').forEach(el => el.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    evento.currentTarget.classList.add('active');
+}
+
+function mostrarAlertaMdm(id, mensagem, tipo) {
+    var alerta = document.getElementById(id);
+    alerta.textContent = mensagem;
+    alerta.className = "alerta alerta-" + tipo;
+    alerta.style.display = "block";
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+    var primeiro = document.querySelector('.mdm-subtab-btn');
+    if (primeiro) primeiro.click();
+
+    // Mostra o campo de valor manual só quando o modo selecionado for "Manual"
+    // (cobre text_auto com 2 opções e select_manual com 3+ opções)
+    document.querySelectorAll('.mode-select').forEach(function (sel) {
+        function aplicar() {
+            var target = document.querySelector('[name="' + sel.dataset.target + '"]');
+            if (!target) return;
+            target.hidden = sel.value !== 'Manual';
+        }
+        sel.addEventListener('change', aplicar);
+        aplicar();
+    });
+
+    // Blocos em destaque (Endereço/Telefone/E-mail/LoyaltyProgram): mostra/esconde corpo
+    // e auto-seleciona os sub-grupos de optin quando o bloco é marcado
+    document.querySelectorAll('.block-toggle').forEach(function (cb) {
+        function aplicar() {
+            var body = document.getElementById(cb.dataset.body);
+            if (body) body.classList.toggle('open', cb.checked);
+        }
+        cb.addEventListener('change', function () {
+            aplicar();
+            if (cb.checked && cb.dataset.autoOptins) {
+                cb.dataset.autoOptins.split(',').forEach(function (nome) {
+                    var el = document.querySelector('input[name="flag__' + nome + '"]');
+                    if (el) el.checked = true;
+                });
+            }
+        });
+        aplicar();
+    });
+
+    // Tipo de cliente (PF/PJ): exibe a seção correspondente e oculta a outra,
+    // desmarcando os campos-mestre da seção oculta para não vazarem no payload
+    function aplicarTipoCliente() {
+        var pj = document.getElementById('tipo-cliente-pj').checked;
+        var secPF = document.getElementById('mdm-section-inhabitant');
+        var secPJ = document.getElementById('mdm-section-organization');
+        var tipoBlock = document.querySelector('.tipo-cliente-block');
+        var presetsPj = document.getElementById('presets-pj');
+        if (secPF) secPF.style.display = pj ? 'none' : '';
+        if (secPJ) secPJ.style.display = pj ? '' : 'none';
+        if (presetsPj) presetsPj.style.display = pj ? 'flex' : 'none';
+
+        // Move a seção do tipo de cliente ativo para logo após a área de seleção PF/PJ
+        var secAtiva = pj ? secPJ : secPF;
+        if (secAtiva && tipoBlock && tipoBlock.nextElementSibling !== secAtiva) {
+            tipoBlock.insertAdjacentElement('afterend', secAtiva);
+        }
+
+        if (pj) {
+            ['inhabitantCpf', 'inhabitantPassportNumber', 'inhabitantRne'].forEach(function (nome) {
+                var el = document.querySelector('input[name="flag__' + nome + '"]');
+                if (el) el.checked = false;
+            });
+            var cnpjFlagOn = document.querySelector('input[name="flag__professionalOrganizationCnpj"]');
+            if (cnpjFlagOn) cnpjFlagOn.checked = true;
+        } else {
+            var cnpjFlag = document.querySelector('input[name="flag__professionalOrganizationCnpj"]');
+            if (cnpjFlag) cnpjFlag.checked = false;
+            var cpfFlagOn = document.querySelector('input[name="flag__inhabitantCpf"]');
+            if (cpfFlagOn) cpfFlagOn.checked = true;
+        }
+    }
+    document.querySelectorAll('input[name="tipo_cliente"]').forEach(function (r) {
+        r.addEventListener('change', aplicarTipoCliente);
+    });
+    aplicarTipoCliente();
+
+    // Preset "Isento de Inscrição Estadual": marca/desmarca os campos de IE de uma vez
+    function aplicarIsentoIE() {
+        var isento = document.getElementById('preset-isento-ie-sim').checked;
+        ['professionalOrganizationStateRegistrationLastCheckDate',
+            'professionalOrganizationStateRegistrationNumber',
+            'professionalOrganizationStateRegistrationFederatedUnit',
+            'professionalOrganizationStateRegistrationStatus'].forEach(function (nome) {
+            var el = document.querySelector('input[name="flag__' + nome + '"]');
+            if (el) el.checked = !isento;
+        });
+        var exemptFlag = document.querySelector('input[name="flag__professionalOrganizationStateRegistrationExemptIndicator"]');
+        if (exemptFlag) exemptFlag.checked = true;
+        var exemptValor = document.querySelector('select[name="val__professionalOrganizationStateRegistrationExemptIndicator"]');
+        if (exemptValor) exemptValor.value = isento ? 'true' : 'false';
+    }
+    document.querySelectorAll('input[name="preset_isento_ie"]').forEach(function (r) {
+        r.addEventListener('change', aplicarIsentoIE);
+    });
+
+    document.getElementById('btn-gerar-payload').addEventListener('click', gerarPayloads);
+    document.getElementById('btn-enviar-payloads').addEventListener('click', enviarSelecionados);
+    document.getElementById('btn-selecionar-todos').addEventListener('click', selecionarTodosPayloads);
+    document.getElementById('btn-limpar-selecao').addEventListener('click', limparSelecaoPayloads);
+    document.getElementById('btn-consultar-mdm').addEventListener('click', consultarCliente);
+});
+
+// ---------------------------------------------------------------------
+// Lista de payloads gerados: cada item guarda o JSON, o tipo (PF/PJ),
+// se está selecionado para envio e o status atual.
+// ---------------------------------------------------------------------
+var payloadsGerados = [];
+
+async function gerarPayloads() {
+    await carregarDatasetCeps();
+    var qtd = Math.max(1, Number(document.getElementById('qtd_clientes').value) || 1);
+    var tipo = document.getElementById('tipo-cliente-pj').checked ? 'PJ' : 'PF';
+    var presetFilialEl = document.getElementById('preset-filial-sim');
+    FILIAL_ATIVO = tipo === 'PJ' && !!(presetFilialEl && presetFilialEl.checked);
+    MATRIZ_CNPJ_RAIZ = null;
+    payloadsGerados = [];
+    for (var i = 0; i < qtd; i++) {
+        var resultado = montarPayload(i);
+        payloadsGerados.push({
+            payload: resultado.payload,
+            administrativeIdentifier: resultado.administrativeIdentifier,
+            tipo: tipo,
+            enviar: true,
+            expandido: false,
+            status: 'Não enviado',
+            statusClasse: 'status-nao-enviado'
+        });
+    }
+    document.getElementById('alerta-cadastro').style.display = 'none';
+    renderizarListaPayloads();
+}
+
+function renderizarListaPayloads() {
+    var toolbar = document.getElementById('payload-list-toolbar');
+    toolbar.style.display = payloadsGerados.length > 0 ? 'flex' : 'none';
+
+    var container = document.getElementById('payload-list');
+    container.innerHTML = '';
+    payloadsGerados.forEach(function (item, idx) {
+        var itemDiv = document.createElement('div');
+        itemDiv.className = 'payload-item';
+
+        var header = document.createElement('div');
+        header.className = 'payload-item-header';
+
+        var checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = item.enviar;
+        checkbox.addEventListener('click', function (e) { e.stopPropagation(); });
+        checkbox.addEventListener('change', function () { item.enviar = checkbox.checked; });
+
+        var tipoSpan = document.createElement('span');
+        tipoSpan.className = 'payload-item-tipo';
+        tipoSpan.textContent = item.tipo;
+
+        var indexSpan = document.createElement('span');
+        indexSpan.className = 'payload-item-index';
+        indexSpan.textContent = item.administrativeIdentifier || ('Cliente ' + (idx + 1));
+
+        var statusSpan = document.createElement('span');
+        statusSpan.className = 'payload-item-status ' + item.statusClasse;
+        statusSpan.textContent = item.status;
+
+        header.appendChild(checkbox);
+        header.appendChild(tipoSpan);
+        header.appendChild(indexSpan);
+        header.appendChild(statusSpan);
+        header.addEventListener('click', function () {
+            item.expandido = !item.expandido;
+            renderizarListaPayloads();
+        });
+
+        var body = document.createElement('div');
+        body.className = 'payload-item-body' + (item.expandido ? ' open' : '');
+        var pre = document.createElement('pre');
+        pre.textContent = JSON.stringify(item.payload, null, 2);
+        body.appendChild(pre);
+        if (item.retorno) {
+            var retornoPre = document.createElement('pre');
+            retornoPre.style.marginTop = '10px';
+            retornoPre.style.borderTop = '1px dashed #ccc';
+            retornoPre.style.paddingTop = '10px';
+            retornoPre.textContent = 'Retorno da API:\n' + formatarBody(item.retorno);
+            body.appendChild(retornoPre);
+        }
+
+        itemDiv.appendChild(header);
+        itemDiv.appendChild(body);
+        container.appendChild(itemDiv);
+    });
+}
+
+function selecionarTodosPayloads() {
+    payloadsGerados.forEach(function (item) { item.enviar = true; });
+    renderizarListaPayloads();
+}
+
+function limparSelecaoPayloads() {
+    payloadsGerados.forEach(function (item) { item.enviar = false; });
+    renderizarListaPayloads();
+}
+
+async function enviarSelecionados() {
+    var selecionados = payloadsGerados.filter(function (item) { return item.enviar; });
+    if (selecionados.length === 0) {
+        mostrarAlertaMdm('alerta-cadastro', 'Selecione ao menos um payload para enviar.', 'erro');
+        return;
+    }
+    document.getElementById('alerta-cadastro').style.display = 'none';
+
+    for (var i = 0; i < payloadsGerados.length; i++) {
+        var item = payloadsGerados[i];
+        if (!item.enviar) continue;
+
+        item.status = 'Enviando...';
+        item.statusClasse = 'status-enviando';
+        renderizarListaPayloads();
+
+        try {
+            var bodyData = new URLSearchParams();
+            bodyData.append('payload', JSON.stringify(item.payload));
+            bodyData.append('administrativeIdentifier', item.administrativeIdentifier || '');
+            var resp = await fetch('/mdm-cadastrar', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: bodyData
+            });
+            var data = await resp.json();
+            if (data.sucesso) {
+                item.retorno = data.retorno;
+                item.status = String(data.retorno.status_code);
+                item.statusClasse = (data.retorno.status_code >= 200 && data.retorno.status_code < 300) ? 'status-sucesso' : 'status-erro';
+            } else {
+                item.status = 'Erro: ' + data.mensagem;
+                item.statusClasse = 'status-erro';
+            }
+        } catch (e) {
+            item.status = 'Erro: ' + e;
+            item.statusClasse = 'status-erro';
+        }
+        renderizarListaPayloads();
+    }
+}
+
+function formatarBody(retorno) {
+    var headers = retorno.headers || {};
+    var body = retorno.body || '';
+    var contentType = (headers['Content-Type'] || headers['content-type'] || '').toLowerCase();
+    if (contentType.includes('application/json')) {
+        try { return JSON.stringify(JSON.parse(body), null, 2); } catch (e) { return body; }
+    }
+    return body;
+}
+
+function consultarCliente() {
+    var identificador = document.getElementById('consulta-identificador').value.trim();
+    if (!identificador) {
+        mostrarAlertaMdm('alerta-consulta', 'Informe o CPF/CNPJ para consulta.', 'erro');
+        return;
+    }
+    document.getElementById('alerta-consulta').style.display = 'none';
+
+    var bodyData = new URLSearchParams();
+    bodyData.append('administrativeIdentifier', identificador);
+
+    fetch('/mdm-consultar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: bodyData
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.sucesso) {
+            document.getElementById('consulta-status').value = d.retorno.status_code ?? '';
+            document.getElementById('consulta-resultado').value = formatarBody(d.retorno);
+        } else {
+            mostrarAlertaMdm('alerta-consulta', 'Erro: ' + d.mensagem, 'erro');
+        }
+    })
+    .catch(e => mostrarAlertaMdm('alerta-consulta', 'Erro: ' + e, 'erro'));
+}
+</script>
+</head>
+<body>
+<h2>MDM &mdash; Cadastro e Consulta de Clientes</h2>
+
+<div class="mdm-subtabs">
+    <button class="mdm-subtab-btn" onclick="abrirSubAbaMdm(event, 'mdm-cadastrar')">Cadastrar</button>
+    <button class="mdm-subtab-btn" onclick="abrirSubAbaMdm(event, 'mdm-consultar')">Consultar</button>
+</div>
+
+<!-- ===================== CADASTRAR ===================== -->
+<div id="mdm-cadastrar" class="mdm-content">
+    <form id="form-cadastro" onsubmit="return false;">
+
+    <div class="mdm-block tipo-cliente-block">
+        <div class="block-header">
+            <div class="tipo-cliente-opcoes">
+                <label class="tipo-cliente-radio">
+                    <input type="radio" name="tipo_cliente" value="PF" id="tipo-cliente-pf" checked>
+                    Pessoa Física (PF)
+                </label>
+                <label class="tipo-cliente-radio">
+                    <input type="radio" name="tipo_cliente" value="PJ" id="tipo-cliente-pj">
+                    Pessoa Jurídica (PJ)
+                </label>
+            </div>
+            <div class="block-qtd">
+                <label for="qtd_clientes">Quantidade de clientes</label>
+                <input type="number" min="1" id="qtd_clientes" name="qtd_clientes" value="1">
+            </div>
+        </div>
+        <div class="block-header presets-pj" id="presets-pj" style="display:none;">
+            <div class="tipo-cliente-opcoes">
+                <span class="preset-label">Isento de Inscrição Estadual</span>
+                <label class="tipo-cliente-radio">
+                    <input type="radio" name="preset_isento_ie" value="sim" id="preset-isento-ie-sim"> Sim
+                </label>
+                <label class="tipo-cliente-radio">
+                    <input type="radio" name="preset_isento_ie" value="nao" id="preset-isento-ie-nao" checked> Não
+                </label>
+            </div>
+            <div class="tipo-cliente-opcoes">
+                <span class="preset-label">Filial</span>
+                <label class="tipo-cliente-radio">
+                    <input type="radio" name="preset_filial" value="sim" id="preset-filial-sim"> Sim
+                </label>
+                <label class="tipo-cliente-radio">
+                    <input type="radio" name="preset_filial" value="nao" id="preset-filial-nao" checked> Não
+                </label>
+            </div>
+        </div>
+    </div>
+
+    {% for section in sections %}
+
+        {% if section.kind == 'plain' %}
+        <details class="mdm-section" id="mdm-section-{{ section.id }}" open>
+            <summary>{{ section.title }}</summary>
+            <div class="section-body">
+                {% for fld in section.fields %}
+                    {% include 'mdm_field.html' %}
+                {% endfor %}
+            </div>
+        </details>
+
+        {% elif section.kind == 'list' %}
+        {% set master = section.fields | selectattr('name', 'equalto', section.master) | first %}
+        {% set outros_campos = section.fields | rejectattr('name', 'equalto', section.master) | list %}
+        {% set auto_optins = [] %}
+        {% for sg in section.subgroups %}{% for sf in sg.fields %}{% if auto_optins.append(sf.name) %}{% endif %}{% endfor %}{% endfor %}
+        <div class="mdm-block">
+            <div class="block-header">
+                <label class="field-check">
+                    <input type="checkbox" class="block-toggle" name="flag__{{ master.name }}"
+                           data-body="body-{{ section.id }}" data-auto-optins="{{ auto_optins | join(',') }}"
+                           {% if master.flag %}checked{% endif %}>
+                    <span>{{ section.title }}</span>
+                </label>
+                <div class="field-value">
+                    {% set fld = master %}
+                    {% include 'mdm_value.html' %}
+                </div>
+                <div class="block-qtd">
+                    <label for="qtd_{{ section.id }}">Quantidade</label>
+                    <input type="number" min="1" id="qtd_{{ section.id }}" name="qtd__{{ section.id }}" value="{{ section.qtd_default }}">
+                </div>
+            </div>
+            <div class="block-body" id="body-{{ section.id }}">
+                {% for fld in outros_campos %}
+                    {% include 'mdm_field.html' %}
+                {% endfor %}
+                {% for sg in section.subgroups %}
+                <div class="subgroup">
+                    <h5>{{ sg.title }}</h5>
+                    {% for fld in sg.fields %}
+                        {% include 'mdm_field.html' %}
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        {% elif section.kind == 'group_master' %}
+        {% set master = section.fields | selectattr('name', 'equalto', section.master) | first %}
+        {% set outros_campos = section.fields | rejectattr('name', 'equalto', section.master) | list %}
+        <div class="mdm-block">
+            <div class="block-header">
+                <label class="field-check">
+                    <input type="checkbox" class="block-toggle" name="flag__{{ master.name }}"
+                           data-body="body-{{ section.id }}" {% if master.flag %}checked{% endif %}>
+                    <span>{{ section.title }}</span>
+                </label>
+                <div class="field-value">
+                    {% set fld = master %}
+                    {% include 'mdm_value.html' %}
+                </div>
+            </div>
+            <div class="block-body" id="body-{{ section.id }}">
+                {% for fld in outros_campos %}
+                    {% include 'mdm_field.html' %}
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+    {% endfor %}
+
+    <div class="actions-bar">
+        <button type="button" id="btn-gerar-payload">Gerar Payloads</button>
+        <button type="button" id="btn-enviar-payloads" class="btn-enviar">Enviar Selecionados</button>
+        <div class="note">Monta o JSON no mesmo formato aceito pela API (schema/fields, blocos de inhabitant ou professionalOrganization, listas de e-mail/telefone/endereço, optins etc.). Campos "Automático" são preenchidos com valores gerados na hora (CPF, CNPJ, nomes, e-mails, telefones...); o endereço automático é aproximado, pois a base real de CEPs só existe no servidor.</div>
+    </div>
+    <div id="alerta-cadastro" style="display:none;"></div>
+    <div id="payload-list-toolbar" class="payload-list-toolbar" style="display:none;">
+        <button type="button" id="btn-selecionar-todos" class="btn-link">Selecionar todos</button>
+        <button type="button" id="btn-limpar-selecao" class="btn-link">Limpar seleção</button>
+    </div>
+    <div id="payload-list"></div>
+    </form>
+</div>
+
+<!-- ===================== CONSULTAR ===================== -->
+<div id="mdm-consultar" class="mdm-content">
+    <div id="alerta-consulta" style="display:none;"></div>
+    <div class="consulta-form">
+        <input type="text" id="consulta-identificador" placeholder="CPF ou CNPJ do cliente">
+        <button type="button" id="btn-consultar-mdm">Consultar</button>
+    </div>
+    <label for="consulta-status">Status code:</label>
+    <input type="text" id="consulta-status" readonly style="width:120px; padding:6px; margin-bottom:10px;">
+    <label for="consulta-resultado">Retorno:</label>
+    <textarea id="consulta-resultado" readonly placeholder="O retorno da consulta será exibido aqui"></textarea>
+</div>
+
+</body>
+</html>

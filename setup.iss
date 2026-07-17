@@ -1,5 +1,8 @@
 #define AppName      "Backoffice Equipe QA"
-#define AppVersion   "1.0"
+; AppVersion pode ser sobrescrita via linha de comando: /DAppVersion=X.Y.Z
+#ifndef AppVersion
+  #define AppVersion "2.7.0"
+#endif
 #define AppPublisher "Equipe QA"
 #define AppExeName   "ExtratordeLogs.exe"
 #define SourceDir    "dist\ExtratordeLogs"
@@ -12,7 +15,7 @@ AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 OutputDir=dist\installer
-OutputBaseFilename=ExtratordeLogs_Setup
+OutputBaseFilename=ExtratordeLogs_Setup_v{#AppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

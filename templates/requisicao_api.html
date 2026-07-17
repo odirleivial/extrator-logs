@@ -81,14 +81,31 @@
             return body;
         }
 
+        function mostrarAlerta(mensagem, tipo) {
+            var alerta = document.getElementById("alerta");
+            alerta.textContent = mensagem;
+            alerta.className = "alerta alerta-" + tipo;
+            alerta.style.display = "block";
+            if (tipo === "sucesso") setTimeout(function() { alerta.style.display = "none"; }, 6000);
+        }
+
+        function ocultarAlerta() {
+            document.getElementById("alerta").style.display = "none";
+        }
+
+        document.addEventListener("focusin", function(e) {
+            if (e.target.matches("input, select, textarea")) ocultarAlerta();
+        });
+
         function fazerRequisicao() {
             const api = document.getElementById('api').value;
             const body = document.getElementById('body').value;
 
             if (!api) {
-                alert('Selecione uma API.');
+                mostrarAlerta('Selecione uma API.', 'erro');
                 return;
             }
+            ocultarAlerta();
 
             const bodyData = new URLSearchParams();
             bodyData.append('api', api);
@@ -110,18 +127,19 @@
                     const bodyFormatado = formatarBodyRetorno(retorno);
                     document.getElementById('retorno').value = bodyFormatado;
                 } else {
-                    alert('Erro: ' + d.mensagem);
+                    mostrarAlerta('Erro: ' + d.mensagem, 'erro');
                 }
             })
-            .catch(e => alert('Erro: ' + e));
+            .catch(e => mostrarAlerta('Erro: ' + e, 'erro'));
         }
 
         function salvarRetorno() {
             const retorno = document.getElementById('retorno').value.trim();
             if (!retorno) {
-                alert('Nenhum retorno para salvar.');
+                mostrarAlerta('Nenhum retorno para salvar.', 'erro');
                 return;
             }
+            ocultarAlerta();
 
             // aqui continuamos mandando o JSON completo do retorno se quiser,
             // mas como agora só temos o body no textarea,
@@ -137,17 +155,18 @@
             .then(r => r.json())
             .then(d => {
                 if (d.sucesso) {
-                    alert('Retorno salvo com sucesso em:\n' + d.caminho);
+                    mostrarAlerta('Retorno salvo em: ' + d.caminho, 'sucesso');
                 } else {
-                    alert('Erro: ' + d.mensagem);
+                    mostrarAlerta('Erro: ' + d.mensagem, 'erro');
                 }
             })
-            .catch(e => alert('Erro: ' + e));
+            .catch(e => mostrarAlerta('Erro: ' + e, 'erro'));
         }
     </script>
 </head>
 <body>
     <h2>Requisição API</h2>
+    <div id="alerta" style="display:none;"></div>
 
     <div class="api-form">
         <label for="api">API:</label>
