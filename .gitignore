@@ -20,8 +20,11 @@ server_agent/nssm.exe
 server_agent/AgentExtratarLog
 server_agent/agent_extrator_log.spec
 
-# Dados gerados em runtime
-static/data/
+# Dados em static/data: ignora tudo, exceto as bases oficiais versionadas
+# (endereços/CEPs e CNAEs), que a aplicação usa para geração automática
+static/data/*
+!static/data/base_de_ceps.json
+!static/data/base_de_cnaes.json
 
 # Pastas de avaliação/rascunho
 _avaliar/

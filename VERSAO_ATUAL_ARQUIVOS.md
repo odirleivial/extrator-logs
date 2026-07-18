@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
 **Data:** 17 de Julho de 2026  
-**Versão:** 2.17.3
+**Versão:** 2.18.0
 
 ---
 
@@ -18,6 +18,11 @@ A versão é definida em `version.py` e propagada automaticamente para o footer 
 ---
 
 ## 📋 Histórico de Versões
+
+### 2.18.0 — 17/07/2026
+- Aba MDM (Cadastrar e Alterar): CNAEs gerados automaticamente agora são **válidos** (código e descrição oficiais). Nova base `static/data/base_de_cnaes.json` com as **1.332 subclasses CNAE do IBGE** (API oficial de serviços de dados), no mesmo padrão da base de CEPs
+- Cadastro: os N CNAEs do bloco são sorteados da base, sem repetição, com o 1º marcado como principal e a descrição oficial correspondente ao código
+- Alterar: o botão **+ CNAE** pré-preenche com um código válido da base; ao gerar o patch, a descrição sai da base oficial (para códigos que o cliente já tinha e não estão na base, a descrição original do cliente é preservada)
 
 ### 2.17.3 — 17/07/2026
 - Aba MDM (Cadastrar): preset **UF (Estado)** passa a ter **Automático** como valor padrão (primeira opção do combobox). A escolha — Automático ou uma UF específica — é replicada nos campos de UF do endereço e da Inscrição Estadual (PF e PJ)

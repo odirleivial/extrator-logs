@@ -135,7 +135,7 @@ SECTIONS = [
             f('professionalOrganizationSalesEnableIndicator', 'Habilitado para Vendas', 'bool', True, True),
             f('professionalOrganizationEnableIndicator', 'Habilitado', 'bool', True, True),
             f('professionalOrganizationRegisteredActivityCode', 'Atividades Econômicas (CNAE)', 'cnae', True, 3,
-              help_='Gerado automaticamente em bloco a partir da base de CNAEs'),
+              help_='CNAEs válidos (código + descrição) sorteados da base oficial de subclasses do IBGE'),
             f('professionalOrganizationStateRegistrationExemptIndicator', 'Isento de Inscrição Estadual', 'bool', True, False),
             f('professionalOrganizationStateRegistrationLastCheckDate', 'Data Última Verificação IE', 'text_auto', True, 'Automatico'),
             f('professionalOrganizationStateRegistrationNumber', 'Número Inscrição Estadual (PJ)', 'text_auto', True, 'Automatico'),

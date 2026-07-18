@@ -496,6 +496,52 @@ async function carregarDatasetCeps() {
     return CEP_DATASET;
 }
 
+// Base oficial de CNAEs (subclasses IBGE, código de 7 dígitos + descrição),
+// servida como JSON estático igual à base de CEPs.
+var CNAE_DATASET = null;
+
+async function carregarDatasetCnaes() {
+    if (CNAE_DATASET) return CNAE_DATASET;
+    try {
+        var resp = await fetch('{{ url_for("static", filename="data/base_de_cnaes.json") }}');
+        CNAE_DATASET = await resp.json();
+    } catch (e) {
+        console.warn('Não foi possível carregar a base de CNAEs; usando fallback aleatório.', e);
+        CNAE_DATASET = [];
+    }
+    return CNAE_DATASET;
+}
+
+// Sorteia um CNAE válido da base; fallback aleatório só se a base não carregou
+function escolherCnae() {
+    if (CNAE_DATASET && CNAE_DATASET.length > 0) return escolher(CNAE_DATASET);
+    return { code: String(randInt(1000000, 9999999)), description: '(gerado automaticamente)' };
+}
+
+// Gera N CNAEs válidos e distintos (o 1º é o principal)
+function gerarCnaes(qtd) {
+    var usados = {};
+    var lista = [];
+    for (var i = 0; i < qtd; i++) {
+        var item = escolherCnae();
+        var tentativas = 0;
+        while (usados[item.code] && tentativas < 50) { item = escolherCnae(); tentativas++; }
+        usados[item.code] = true;
+        lista.push({ code: item.code, mainIndicator: i === 0, description: item.description });
+    }
+    return lista;
+}
+
+// Busca a descrição oficial de um código de CNAE na base (null se não achar)
+function descricaoCnae(code) {
+    if (!CNAE_DATASET) return null;
+    var alvo = String(code).replace(/\D/g, '');
+    for (var i = 0; i < CNAE_DATASET.length; i++) {
+        if (CNAE_DATASET[i].code === alvo) return CNAE_DATASET[i].description;
+    }
+    return null;
+}
+
 // Escolhe um registro real, respeitando a UF quando informada (regra
 // prioritária) e o tipo de CEP quando existir para essa UF.
 function escolherRegistroCep(ufFiltro, tipoFiltro) {
@@ -732,14 +778,8 @@ function montarPayload(indiceCliente) {
         var cnae = lerCampo('professionalOrganizationRegisteredActivityCode');
         if (cnae.flag) {
             var qtdCnae = Number(cnae.value) || 1;
-            org.registeredActivity = [];
-            for (var i = 0; i < qtdCnae; i++) {
-                org.registeredActivity.push({
-                    code: String(randInt(1000000, 9999999)),
-                    mainIndicator: i === 0,
-                    description: '(gerado automaticamente)'
-                });
-            }
+            // CNAEs válidos (código + descrição oficial) sorteados da base do IBGE
+            org.registeredActivity = gerarCnaes(qtdCnae);
         }
         fields.professionalOrganization = org;
     }
@@ -1039,6 +1079,7 @@ var payloadsGerados = [];
 
 async function gerarPayloads() {
     await carregarDatasetCeps();
+    await carregarDatasetCnaes();
     var qtd = Math.max(1, Number(document.getElementById('qtd_clientes').value) || 1);
     var tipo = document.getElementById('tipo-cliente-pj').checked ? 'PJ' : 'PF';
     var presetFilialEl = document.getElementById('preset-filial-sim');
@@ -1685,6 +1726,11 @@ function criarEditorCnae(fld, fields) {
     lista.className = 'cnae-lista';
     lista.id = 'alterar-cnae-lista';
 
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'cnae-add';
+    addBtn.textContent = '+ CNAE';
+
     function addCnaeLinha(cod, principal) {
         var item = document.createElement('div');
         item.className = 'cnae-item';
@@ -1711,16 +1757,15 @@ function criarEditorCnae(fld, fields) {
         item.appendChild(inp);
         item.appendChild(lblMain);
         item.appendChild(rem);
-        lista.appendChild(item);
+        // Mantém o botão "+ CNAE" sempre no fim da lista
+        if (addBtn.parentNode === lista) lista.insertBefore(item, addBtn);
+        else lista.appendChild(item);
     }
 
     orig.forEach(function (a) { addCnaeLinha(a.code, a.mainIndicator); });
 
-    var addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'cnae-add';
-    addBtn.textContent = '+ CNAE';
-    addBtn.addEventListener('click', function () { addCnaeLinha('', false); });
+    // Novo CNAE já vem pré-preenchido com um código válido da base oficial
+    addBtn.addEventListener('click', function () { addCnaeLinha(escolherCnae().code, false); });
     lista.appendChild(addBtn);
 
     cb.addEventListener('change', function () { row.classList.toggle('field-absent', !cb.checked); });
@@ -1984,6 +2029,10 @@ function diffCnae(ops) {
         if (existia) ops.push({ op: 'remove', path: path });
         return;
     }
+    // Descrição: prioridade para a base oficial de CNAEs; senão mantém a descrição
+    // que o cliente já tinha para aquele código; senão placeholder
+    var descOriginais = {};
+    (orig || []).forEach(function (a) { descOriginais[String(a.code)] = a.description; });
     var lista = document.getElementById('alterar-cnae-lista');
     var itens = [];
     if (lista) {
@@ -1993,7 +2042,7 @@ function diffCnae(ops) {
             itens.push({
                 code: code,
                 mainIndicator: item.querySelector('.cnae-main').checked,
-                description: '(gerado automaticamente)'
+                description: descricaoCnae(code) || descOriginais[code] || '(gerado automaticamente)'
             });
         });
     }
@@ -2101,6 +2150,7 @@ async function gerarPatchAlteracao() {
         return;
     }
     await carregarDatasetCeps(); // garante a base real de CEPs p/ endereços novos coerentes
+    await carregarDatasetCnaes(); // garante a base de CNAEs p/ descrições oficiais no patch
     document.getElementById('alerta-alterar').style.display = 'none';
     var ops = [];
     diffEscalares(ops);
@@ -2249,6 +2299,7 @@ function buscarClienteAlterar() {
             ALTERAR_ID = fields.mainAdministrativeIdentifier || id;
             var tipo = determinarTipoCliente(fields) || '?';
             carregarDatasetCeps(); // pré-carrega a base de CEPs p/ gerar endereços "Automatico"
+            carregarDatasetCnaes(); // pré-carrega a base de CNAEs p/ códigos/descrições válidos
             construirFormAlterar(fields);
             document.getElementById('alterar-actions').style.display = 'block';
             statusEl.textContent = 'Cliente carregado: ' + ALTERAR_ID + ' (' + tipo + '). Ajuste os campos e clique em "Gerar Payload de Alteração".';
