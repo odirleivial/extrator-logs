@@ -36,8 +36,10 @@
     .tipo-cliente-radio { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #fff; cursor: pointer; }
     .tipo-cliente-radio input { width: 16px; height: 16px; cursor: pointer; }
     .presets-pj { flex-direction: column; align-items: flex-start; gap: 10px; border-top: 1px solid rgba(255,255,255,0.35); }
-    .presets-pj .tipo-cliente-opcoes { gap: 16px; }
-    .preset-label { color: #fff; font-weight: 700; min-width: 220px; }
+    .presets-pj .tipo-cliente-opcoes { gap: 16px; align-items: center; }
+    .preset-uf-select { padding: 6px 8px; border-radius: 4px; border: 1px solid #ccc; min-width: 90px; font-size: 0.9rem; background: #fff; }
+    .preset-uf-hint { color: rgba(255,255,255,0.9); font-size: 0.82rem; font-style: italic; }
+    .preset-label { color: #fff; font-weight: 700; min-width: 220px; display: flex; align-items: center; }
 
     /* Blocos em destaque: Endereço / Telefone / E-mail / LoyaltyProgram */
     .mdm-block { margin-bottom: 16px; border: 1px solid #4a90e2; border-radius: 6px; overflow: hidden; }
@@ -81,7 +83,10 @@
     .payload-item-header input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
     .payload-item-tipo { font-weight: 700; color: #1e3a5f; min-width: 30px; }
     .payload-item-index { color: #888; min-width: 60px; }
-    .payload-item-status { margin-left: auto; font-weight: 600; padding: 3px 10px; border-radius: 12px; font-size: 0.85rem; }
+    .payload-item-copy { margin-left: auto; border: 1px solid #ccc; background: #fff; color: #555; border-radius: 4px; padding: 3px 8px; font-size: 0.8rem; cursor: pointer; line-height: 1.2; }
+    .payload-item-copy:hover { background: #f0f4f8; border-color: #1e3a5f; color: #1e3a5f; }
+    .payload-item-copy.copiado { background: #d4edda; border-color: #1e7e34; color: #1e7e34; }
+    .payload-item-status { font-weight: 600; padding: 3px 10px; border-radius: 12px; font-size: 0.85rem; min-width: 96px; text-align: center; }
     .status-nao-enviado { background: #eee; color: #666; }
     .status-enviando { background: #fff3cd; color: #856404; }
     .status-sucesso { background: #d4edda; color: #1e7e34; }
@@ -105,6 +110,26 @@
     .alerta { display: none; margin: 10px 0; padding: 10px 14px; border-radius: 4px; }
     .alerta-erro { background: #fdecea; color: #b71c1c; border: 1px solid #f5c6cb; }
     .alerta-sucesso { background: #eafaf1; color: #1e7e34; border: 1px solid #c3e6cb; }
+
+    /* Aba Alterar */
+    .alterar-status-busca { margin: 6px 0 14px; font-weight: 600; color: #1e3a5f; }
+    .field-row.field-absent > .field-check > span { color: #aaa; font-weight: 500; }
+    .alterar-list-block { border: 1px solid #4a90e2; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
+    .alterar-list-header { background: #1e3a5f; color: #fff; padding: 10px 14px; display: flex; align-items: center; gap: 12px; font-weight: 700; }
+    .alterar-list-add { margin-left: auto; background: #4a90e2; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-weight: 600; }
+    .alterar-list-add:hover { background: #3a7bc8; }
+    .alterar-list-body { padding: 12px 14px; background: #f8fafc; }
+    .alterar-list-vazia { color: #888; font-style: italic; }
+    .alterar-item-card { border: 1px solid #cdd7e2; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; background: #fff; }
+    .alterar-item-card.novo { border-color: #2f8f4e; background: #f4fbf6; }
+    .alterar-item-card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-weight: 700; color: #1e3a5f; }
+    .alterar-item-card-header .item-key { font-family: monospace; font-weight: 600; color: #555; }
+    .alterar-item-keep-label { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #333; }
+    .alterar-item-remove { margin-left: auto; background: #fdecea; color: #b71c1c; border: 1px solid #f5c6cb; border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 0.8rem; }
+    .cnae-lista { display: flex; flex-direction: column; gap: 6px; flex-basis: 100%; margin-top: 6px; }
+    .cnae-item { display: flex; align-items: center; gap: 8px; }
+    .cnae-item input[type="text"] { min-width: 160px; }
+    .cnae-add { background: #4a90e2; color: #fff; border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer; align-self: flex-start; }
 </style>
 <script>
 const MDM_SCHEMA = "{{ schema }}";
@@ -283,106 +308,164 @@ function gerarRNE() {
     return base.slice(0, 3) + base.slice(3, 6) + base.slice(6, 7) + String(digito);
 }
 
+// ---------------------------------------------------------------------
+// Inscrição Estadual: geração válida (regras Sintegra) para os 27 estados.
+// Portado fielmente da biblioteca js-brasil (mariohmol/js-brasil), que é
+// testada e amplamente usada. As funções em IE_GEN recebem um "candidato"
+// (comprimento/prefixo/tipo corretos) e recomputam os dígitos verificadores;
+// IE_CANDIDATO monta esse candidato com o miolo aleatório.
+// ---------------------------------------------------------------------
+var UFS_IE_TODAS = ['AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG',
+    'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'];
+
+function _ieSerie(de, ate) { var r = []; while (de <= ate) r.push(de++); return r; }
+function _iePrim(v, q) { if (q === undefined) q = 8; return String(v).substring(0, q); }
+function _ieSub11(m) { return m < 2 ? 0 : 11 - m; }
+function _rndDig(n) { var s = ''; for (var i = 0; i < n; i++) s += String(randInt(0, 9)); return s; }
+
+// Réplica exata do mod() do js-brasil: pesos aplicados da direita p/ esquerda,
+// ciclando quando a base é maior que o vetor de pesos.
+function _ieMod(valor, mult, div) {
+    if (!mult) mult = [2, 3, 4, 5, 6, 7, 8, 9];
+    if (!div) div = 11;
+    var chars = String(valor).split(''), i = 0, soma = 0;
+    for (var k = chars.length - 1; k >= 0; k--) {
+        if (i > mult.length - 1) i = 0;
+        soma += mult[i++] * parseInt(chars[k], 10);
+    }
+    return soma % div;
+}
+function _ieTrivial(base) { return base + _ieSub11(_ieMod(base)); }
+
+var IE_GEN = {
+    ac: function (v) { var b = _iePrim(v, 11); var d1 = _ieSub11(_ieMod(b)); var d2 = _ieSub11(_ieMod(b + d1)); return b + d1 + d2; },
+    am: function (v) { return _ieTrivial(_iePrim(v)); },
+    al: function (v) {
+        var b = _iePrim(v), soma = 0;
+        for (var i = 0; i < b.length; i++) soma += (9 - i) * parseInt(b[i], 10);
+        var prod = soma * 10, resto = prod - Math.floor(prod / 11) * 11;
+        return b + (resto === 10 ? 0 : resto);
+    },
+    ap: function (v) {
+        var b = _iePrim(v), n = parseInt(b, 10), p, d;
+        if (n >= 3000001 && n <= 3017000) { p = 5; d = 0; }
+        else if (n >= 3017001 && n <= 3019022) { p = 9; d = 1; }
+        else { p = 0; d = 0; }
+        var resto = _ieMod(p + b, [2, 3, 4, 5, 6, 7, 8, 9, 1]);
+        var dig = resto === 1 ? 0 : (resto === 0 ? d : 11 - resto);
+        return b + dig;
+    },
+    ba: function (v) {
+        var b = _iePrim(v, String(v).length - 2);
+        var sm = _ieSerie(2, 7), pm = _ieSerie(2, 8), cmp = String(v).substring(0, 1), d1, d2;
+        if (String(v).length === 9) { sm.push(8); pm.push(9); cmp = String(v).substring(1, 2); }
+        if ('0123458'.indexOf(cmp) !== -1) {
+            var sr = _ieMod(b, sm, 10); d2 = sr === 0 ? 0 : 10 - sr;
+            var pr = _ieMod(b + d2, pm, 10); d1 = pr === 0 ? 0 : 10 - pr;
+        } else {
+            d2 = _ieSub11(_ieMod(b, sm));
+            d1 = _ieSub11(_ieMod(b + d2, pm));
+        }
+        return b + d1 + d2;
+    },
+    ce: function (v) { return _ieTrivial(_iePrim(v)); },
+    df: function (v) { var b = _iePrim(v, 11); var d1 = _ieSub11(_ieMod(b)); var d2 = _ieSub11(_ieMod(b + d1)); return b + d1 + d2; },
+    es: function (v) { return _ieTrivial(_iePrim(v)); },
+    go: function (v) {
+        var b = _iePrim(v), resto = _ieMod(b), d;
+        if (resto === 0) d = 0;
+        else if (resto === 1) { var n = parseInt(b, 10); d = (n >= 10103105 && n <= 10119997) ? 1 : 0; }
+        else d = 11 - resto;
+        return b + d;
+    },
+    ma: function (v) { return _ieTrivial(_iePrim(v)); },
+    mg: function (v) {
+        var b = _iePrim(v, 11);
+        var bz = String(v).substring(0, 3) + '0' + String(v).substring(3, 11);
+        var chars = bz.split(''), i = 0, concat = '';
+        for (var k = chars.length - 1; k >= 0; k--) { if (i > 1) i = 0; concat = String([2, 1][i++] * parseInt(chars[k], 10)) + concat; }
+        var soma = 0;
+        for (var j = 0; j < concat.length; j++) soma += parseInt(concat[j], 10);
+        var d1 = ((Math.floor(soma / 10) + 1) * 10) - soma; if (d1 === 10) d1 = 0;
+        var d2 = _ieSub11(_ieMod(b + d1, _ieSerie(2, 11)));
+        return b + d1 + d2;
+    },
+    ms: function (v) { return _ieTrivial(_iePrim(v)); },
+    mt: function (v) { var b = String(v).length === 11 ? String(v).substring(0, 10) : _iePrim(v); return _ieTrivial(b); },
+    pa: function (v) { return _ieTrivial(_iePrim(v)); },
+    pb: function (v) { return _ieTrivial(_iePrim(v)); },
+    pe: function (v) {
+        var b = String(v).substring(0, String(v).length - 2);
+        var r1 = _ieMod(b), d1 = (11 - r1 >= 10) ? 0 : 11 - r1;
+        var r2 = _ieMod(b + d1), d2 = (11 - r2 >= 10) ? 0 : 11 - r2;
+        return b + d1 + d2;
+    },
+    pi: function (v) { return _ieTrivial(_iePrim(v)); },
+    pr: function (v) {
+        var b = _iePrim(v);
+        var r1 = _ieMod(b, _ieSerie(2, 7)), d1 = (11 - r1 >= 10) ? 0 : 11 - r1;
+        var r2 = _ieMod(b + d1, _ieSerie(2, 7)), d2 = (11 - r2 >= 10) ? 0 : 11 - r2;
+        return b + d1 + d2;
+    },
+    rj: function (v) { var b = _iePrim(v, 7); return b + _ieSub11(_ieMod(b, _ieSerie(2, 7))); },
+    rn: function (v) {
+        var b = String(v).substring(0, String(v).length - 1);
+        var m = _ieSerie(2, 9); if (String(v).length === 10) m.push(10);
+        var resto = (_ieMod(b, m) * 10) % 11;
+        return b + (resto === 10 ? 0 : resto);
+    },
+    ro: function (v) { var b = _iePrim(v, 13); var rm = _ieMod(b); return b + (rm <= 1 ? 1 : 11 - rm); },
+    rr: function (v) { var b = _iePrim(v); return b + _ieMod(b, [8, 7, 6, 5, 4, 3, 2, 1], 9); },
+    rs: function (v) { return _ieTrivial(_iePrim(v, 9)); },
+    sc: function (v) { return _ieTrivial(_iePrim(v)); },
+    se: function (v) { return _ieTrivial(_iePrim(v)); },
+    sp: function (v) {
+        var pb = _iePrim(v), sb = String(v).substring(9, 11);
+        var r1 = String(_ieMod(pb, [10, 8, 7, 6, 5, 4, 3, 1])); var p = r1.length > 1 ? r1[1] : r1[0];
+        var r2 = String(_ieMod(pb + p + sb, _ieSerie(2, 10))); var s = r2.length > 1 ? r2[1] : r2[0];
+        return pb + p + sb + s;
+    },
+    to: function (v) {
+        var b = String(v).length === 11 ? (String(v).substring(0, 2) + String(v).substring(4, 10)) : _iePrim(v);
+        return String(v).substring(0, String(v).length - 1) + _ieSub11(_ieMod(b));
+    }
+};
+
+var IE_CANDIDATO = {
+    ac: function () { return '01' + _rndDig(9) + '00'; },
+    al: function () { return '24' + _rndDig(6) + '0'; },
+    am: function () { return _rndDig(8) + '0'; },
+    ap: function () { return '03' + _rndDig(6) + '0'; },
+    ba: function () { return _rndDig(7) + '00'; },
+    ce: function () { return _rndDig(8) + '0'; },
+    df: function () { return '07' + _rndDig(9) + '00'; },
+    es: function () { return _rndDig(8) + '0'; },
+    go: function () { return '15' + _rndDig(6) + '0'; },
+    ma: function () { return '12' + _rndDig(6) + '0'; },
+    mg: function () { return _rndDig(11) + '00'; },
+    ms: function () { return '28' + _rndDig(6) + '0'; },
+    mt: function () { return _rndDig(10) + '0'; },
+    pa: function () { return (Math.random() < 0.5 ? '15' : '75') + _rndDig(6) + '0'; },
+    pb: function () { return _rndDig(8) + '0'; },
+    pe: function () { return _rndDig(7) + '00'; },
+    pi: function () { return _rndDig(8) + '0'; },
+    pr: function () { return _rndDig(8) + '00'; },
+    rj: function () { return _rndDig(7) + '0'; },
+    rn: function () { return '20' + _rndDig(6) + '0'; },
+    ro: function () { return _rndDig(13) + '0'; },
+    rr: function () { return '24' + _rndDig(6) + '0'; },
+    rs: function () { return _rndDig(9) + '0'; },
+    sc: function () { return _rndDig(8) + '0'; },
+    se: function () { return _rndDig(8) + '0'; },
+    sp: function () { return _rndDig(8) + '0' + _rndDig(2) + '0'; },
+    to: function () { return _rndDig(2) + '01' + _rndDig(6) + '0'; }
+};
+
 function gerarInscricaoEstadual(uf) {
-    uf = (uf || '').toUpperCase();
-
-    function mg() {
-        var base = [];
-        for (var i = 0; i < 11; i++) base.push(randInt(0, 9));
-        var calc = base.slice(0, 3).concat([0]).concat(base.slice(3));
-        var soma = 0;
-        calc.forEach(function (num, idx) {
-            var peso = idx % 2 === 0 ? 1 : 2;
-            var produto = num * peso;
-            soma += Math.floor(produto / 10) + (produto % 10);
-        });
-        var d1 = (10 - (soma % 10)) % 10;
-        var seg = base.concat([d1]);
-        var pesos2 = [3, 2, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2];
-        var soma2 = 0;
-        for (i = 0; i < seg.length; i++) soma2 += seg[i] * pesos2[i];
-        var resto = soma2 % 11;
-        var d2 = (resto === 0 || resto === 1) ? 0 : 11 - resto;
-        return base.concat([d1, d2]).join('');
-    }
-
-    function sp() {
-        var base = String(randInt(Math.pow(10, 7), Math.pow(10, 8) - 1));
-        var pesosD1 = [1, 3, 4, 5, 6, 7, 8, 10];
-        var soma = 0, i;
-        for (i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesosD1[i];
-        var r = soma % 11;
-        var d1 = r !== 10 ? r : 0;
-        var filial = '11';
-        var numero11 = base + String(d1) + filial;
-        var pesosD2 = [3, 2, 10, 9, 8, 7, 6, 5, 4, 3, 2];
-        var soma2 = 0;
-        for (i = 0; i < numero11.length; i++) soma2 += parseInt(numero11[i], 10) * pesosD2[i];
-        var r2 = soma2 % 11;
-        var d2 = r2 !== 10 ? r2 : 0;
-        return base + String(d1) + filial + String(d2);
-    }
-
-    function df() {
-        var prefixo = '07';
-        var baseRandom = '';
-        var i;
-        for (i = 0; i < 9; i++) baseRandom += String(randInt(0, 9));
-        var base = prefixo + baseRandom;
-        var pesosRev = [2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4].slice().reverse();
-        var soma = 0;
-        for (i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesosRev[i];
-        var resto = soma % 11;
-        var dv1 = (resto === 0 || resto === 1) ? 0 : 11 - resto;
-        base = base + String(dv1);
-        pesosRev = [2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4, 5].slice().reverse();
-        soma = 0;
-        for (i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesosRev[i];
-        resto = soma % 11;
-        var dv2 = (resto === 0 || resto === 1) ? 0 : 11 - resto;
-        return base + String(dv2);
-    }
-
-    function to() {
-        var prefixo = '29';
-        var baseRandom = String(randInt(0, Math.pow(10, 6) - 1)).padStart(6, '0');
-        var base = prefixo + baseRandom;
-        var tipoEmpresa = escolher(['01', '02', '03', '99']);
-        var pesos = [9, 8, 7, 6, 5, 4, 3, 2];
-        var soma = 0;
-        for (var i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesos[i];
-        var resto = soma % 11;
-        var dv = (resto === 0 || resto === 1) ? 0 : 11 - resto;
-        return prefixo + tipoEmpresa + baseRandom + String(dv);
-    }
-
-    function mt() {
-        var base = '';
-        var i;
-        for (i = 0; i < 10; i++) base += String(randInt(0, 9));
-        var pesos = [3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
-        var soma = 0;
-        for (i = 0; i < base.length; i++) soma += parseInt(base[i], 10) * pesos[i];
-        var dv = 11 - (soma % 11);
-        return base + (dv < 10 ? String(dv) : '0');
-    }
-
-    function ro() {
-        var num5 = randInt(0, 999999999);
-        var base5 = String(num5).padStart(9, '0');
-        var base13 = base5.padStart(13, '0');
-        var pesos = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
-        var soma = 0;
-        for (var i = 0; i < base13.length; i++) soma += parseInt(base13[i], 10) * pesos[i];
-        var resto = soma % 11;
-        var dv = 11 - resto;
-        if (dv >= 10) dv -= 10;
-        return base13 + String(dv);
-    }
-
-    var geradores = { SP: sp, MG: mg, DF: df, TO: to, MT: mt, RO: ro };
-    if (!(uf in geradores)) return '00000000000';
-    return geradores[uf]();
+    uf = String(uf || '').toLowerCase();
+    if (!IE_GEN[uf] || !IE_CANDIDATO[uf]) return '000000000';
+    var res = IE_GEN[uf](IE_CANDIDATO[uf]());
+    return res ? String(res) : '000000000';
 }
 
 // ---------------------------------------------------------------------
@@ -580,7 +663,7 @@ function montarPayload(indiceCliente) {
 
         var ieNumPF = lerCampo('inhabitantStateRegistrationNumber'), ieUfPF = lerCampo('inhabitantStateRegistrationFederatedUnit');
         if (ieNumPF.flag || ieUfPF.flag) {
-            var ufPF = ieUfPF.value === 'Automatico' ? escolher(['SP', 'DF', 'TO', 'MT', 'MG', 'RO']) : String(ieUfPF.value);
+            var ufPF = ieUfPF.value === 'Automatico' ? escolher(UFS_IE_TODAS) : String(ieUfPF.value);
             inhabitant.stateRegistration = {};
             if (ieNumPF.flag) inhabitant.stateRegistration.number = ieNumPF.value === 'Automatico' ? gerarInscricaoEstadual(ufPF) : String(ieNumPF.value);
             if (ieUfPF.flag) inhabitant.stateRegistration.federatedUnit = ufPF;
@@ -614,7 +697,7 @@ function montarPayload(indiceCliente) {
         var ieUfPJ = lerCampo('professionalOrganizationStateRegistrationFederatedUnit');
         var ieNumPJ = lerCampo('professionalOrganizationStateRegistrationNumber');
         var ieStatusPJ = lerCampo('professionalOrganizationStateRegistrationStatus');
-        var ufPJ = ieUfPJ.value === 'Automatico' ? escolher(['SP', 'DF', 'TO', 'MT', 'MG', 'RO']) : String(ieUfPJ.value);
+        var ufPJ = ieUfPJ.value === 'Automatico' ? escolher(UFS_IE_TODAS) : String(ieUfPJ.value);
 
         if (ieUfPJ.flag || ieNumPJ.flag || ieStatusPJ.flag) {
             var numeroObj = {};
@@ -921,6 +1004,22 @@ document.addEventListener("DOMContentLoaded", function () {
         r.addEventListener('change', aplicarIsentoIE);
     });
 
+    // Preset "UF (Estado)": preenche a UF do endereço e da Inscrição Estadual (PF e PJ).
+    // Só aplica em campos-select que tenham a UF como opção (o endereço não cobre AC).
+    function aplicarPresetUF() {
+        var uf = document.getElementById('preset-uf').value;
+        ['val__addressProvince',
+            'val__inhabitantStateRegistrationFederatedUnit',
+            'val__professionalOrganizationStateRegistrationFederatedUnit'].forEach(function (nome) {
+            var el = document.querySelector('#form-cadastro select[name="' + nome + '"]');
+            if (!el) return;
+            var temOpcao = Array.prototype.some.call(el.options, function (o) { return o.value === uf; });
+            if (temOpcao) el.value = uf;
+        });
+    }
+    document.getElementById('preset-uf').addEventListener('change', aplicarPresetUF);
+    aplicarPresetUF();
+
     document.getElementById('btn-gerar-payload').addEventListener('click', gerarPayloads);
     document.getElementById('btn-enviar-payloads').addEventListener('click', enviarSelecionados);
     document.getElementById('btn-selecionar-todos').addEventListener('click', selecionarTodosPayloads);
@@ -985,6 +1084,46 @@ function renderizarListaPayloads() {
         indexSpan.className = 'payload-item-index';
         indexSpan.textContent = item.administrativeIdentifier || ('Cliente ' + (idx + 1));
 
+        var copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'payload-item-copy';
+        copyBtn.textContent = 'Copiar';
+        copyBtn.title = 'Copiar CPF/CNPJ/RNE/Passaporte para a área de transferência';
+        copyBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var valor = item.administrativeIdentifier || '';
+            if (!valor) return;
+            var marcarCopiado = function () {
+                copyBtn.textContent = 'Copiado!';
+                copyBtn.classList.add('copiado');
+                setTimeout(function () {
+                    copyBtn.textContent = 'Copiar';
+                    copyBtn.classList.remove('copiado');
+                }, 1500);
+            };
+            var copiarComExecCommand = function () {
+                var textarea = document.createElement('textarea');
+                textarea.value = valor;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    marcarCopiado();
+                } catch (err) {
+                    alert('Não foi possível copiar automaticamente. Valor: ' + valor);
+                }
+                document.body.removeChild(textarea);
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(valor).then(marcarCopiado).catch(copiarComExecCommand);
+            } else {
+                copiarComExecCommand();
+            }
+        });
+
         var statusSpan = document.createElement('span');
         statusSpan.className = 'payload-item-status ' + item.statusClasse;
         statusSpan.textContent = item.status;
@@ -992,6 +1131,7 @@ function renderizarListaPayloads() {
         header.appendChild(checkbox);
         header.appendChild(tipoSpan);
         header.appendChild(indexSpan);
+        header.appendChild(copyBtn);
         header.appendChild(statusSpan);
         header.addEventListener('click', function () {
             item.expandido = !item.expandido;
@@ -1108,12 +1248,1026 @@ function consultarCliente() {
     .catch(e => mostrarAlertaMdm('alerta-consulta', 'Erro: ' + e, 'erro'));
 }
 </script>
+
+<script>
+// =====================================================================
+// Aba ALTERAR: busca um cliente no MDM, monta um formulário editável a
+// partir do retorno (data.fields) e gera um JSON Patch (RFC 6902) apenas
+// com as diferenças (add/replace/remove), enviado via PATCH ?jsonPatch=true.
+// =====================================================================
+var MDM_SECTIONS = {{ sections | tojson }};
+var ALTERAR_ORIGINAL = null;   // objeto "fields" retornado pelo MDM
+var ALTERAR_ID = null;         // identificador usado na URL do PATCH
+var alterarPayloads = [];      // itens gerados (JSON Patch)
+
+// Caminho de cada campo escalar dentro de "fields" (relativo, separado por "/").
+// Também usado para montar o path do JSON Patch: '/fields/' + caminho.
+var MDM_SCALAR_PATHS = {
+    businessUnitIdentifier: 'businessUnitIdentifier',
+    creationDate: 'creationDate',
+    creationStoreIdentifier: 'creationStoreIdentifier',
+    createdByApp: 'createdByApp',
+    creationUserLDAPNumber: 'creationUserLDAPNumber',
+    updatedByApp: 'updatedByApp',
+    lastUpdateUserLDAPNumber: 'lastUpdateUserLDAPNumber',
+    lastUpdateStoreIdentifier: 'lastUpdateStoreIdentifier',
+    preferenceStoreIdentifier: 'preferenceStoreIdentifier',
+    customerIndicator: 'customerIndicator',
+    inhabitantCpf: 'inhabitant/administrativeIdentifier/cpf',
+    inhabitantPassportNumber: 'inhabitant/administrativeIdentifier/passportNumber',
+    inhabitantRne: 'inhabitant/administrativeIdentifier/rne',
+    inhabitantFullName: 'inhabitant/fullName',
+    inhabitantBirthDate: 'inhabitant/birthDate',
+    inhabitantOver18YearsIndicator: 'inhabitant/over18YearsIndicator',
+    inhabitantCollaboratorIdentifier: 'inhabitant/collaboratorIdentifier',
+    inhabitantProfessionName: 'inhabitant/professionName',
+    inhabitantStateRegistrationNumber: 'inhabitant/stateRegistration/number',
+    inhabitantStateRegistrationFederatedUnit: 'inhabitant/stateRegistration/federatedUnit',
+    professionalOrganizationCnpj: 'professionalOrganization/administrativeIdentifier/cnpj',
+    professionalOrganizationRegisteredName: 'professionalOrganization/registeredName',
+    professionalOrganizationCommercialName: 'professionalOrganization/commercialName',
+    professionalOrganizationSize: 'professionalOrganization/size',
+    professionalOrganizationStatus: 'professionalOrganization/status',
+    professionalOrganizationLastCheckDate: 'professionalOrganization/lastCheckDate',
+    professionalOrganizationSalesEnableIndicator: 'professionalOrganization/salesEnableIndicator',
+    professionalOrganizationEnableIndicator: 'professionalOrganization/enableIndicator',
+    professionalOrganizationStateRegistrationExemptIndicator: 'professionalOrganization/stateRegistration/exemptIndicator',
+    professionalOrganizationStateRegistrationLastCheckDate: 'professionalOrganization/stateRegistration/lastCheckDate',
+    professionalOrganizationStateRegistrationNumber: 'professionalOrganization/stateRegistration/numbers/0/number',
+    professionalOrganizationStateRegistrationFederatedUnit: 'professionalOrganization/stateRegistration/numbers/0/federatedUnit',
+    professionalOrganizationStateRegistrationStatus: 'professionalOrganization/stateRegistration/numbers/0/status',
+    socialLoginEmail: 'socialLogin/0/email',
+    socialLoginSource: 'socialLogin/0/source',
+    interestAreaName: 'interestAreaName/0',
+    DIYRelationType: 'DIYRelationType',
+    homeDecorKnowledgeLevel: 'homeDecorKnowledgeLevel',
+    leroyMerlinCreditCardStatusName: 'leroyMerlinCreditCard/statusName',
+    leroyMerlinCreditCardCategoryIdentifier: 'leroyMerlinCreditCard/categoryIdentifier',
+    loyaltyProgramStatus: 'loyaltyProgram/status',
+    loyaltyProgramType: 'loyaltyProgram/type',
+    loyaltyProgramCreateSource: 'loyaltyProgram/createSource',
+    loyaltyProgramStatusloyaltyCreationDate: 'loyaltyProgram/statusInclusionDate',
+    loyaltyProgramLeadIndicator: 'loyaltyProgram/leadIndicator',
+    loyaltyProgramAdhesionOptinDatetime: 'loyaltyProgram/adhesionOptin/optinDatetime',
+    loyaltyProgramAdhesionOptinIndicator: 'loyaltyProgram/adhesionOptin/optinIndicator',
+    loyaltyProgramAdhesionOptinPerformingApp: 'loyaltyProgram/adhesionOptin/performingApp',
+    loyaltyProgramProfessionalAssociationName: 'loyaltyProgram/professionalAssociation/name',
+    loyaltyProgramProfessionalAssociationRegistrationNumber: 'loyaltyProgram/professionalAssociation/registrationNumber',
+    loyaltyProgramProfessionalAssociationDocumentationStatus: 'loyaltyProgram/professionalAssociation/documentationStatus',
+    emailOptinIndicator: 'emailOptin/optinIndicator',
+    emailOptinDatetime: 'emailOptin/optinDatetime',
+    emailOptinPerformingApp: 'emailOptin/performingApp',
+    phoneNumberOptinIndicator: 'phoneNumberOptin/optinIndicator',
+    phoneNumberOptinDatetime: 'phoneNumberOptin/optinDatetime',
+    phoneNumberOptinPerformingApp: 'phoneNumberOptin/performingApp',
+    smsOptinIndicator: 'smsOptin/optinIndicator',
+    smsOptinDatetime: 'smsOptin/optinDatetime',
+    smsOptinPerformingApp: 'smsOptin/performingApp',
+    pushNotificationOptinIndicator: 'pushNotificationOptin/optinIndicator',
+    pushNotificationOptinDatetime: 'pushNotificationOptin/optinDatetime',
+    pushNotificationOptinPerformingApp: 'pushNotificationOptin/performingApp',
+    whatsAppOptinIndicator: 'whatsAppOptin/optinIndicator',
+    whatsAppOptinDatetime: 'whatsAppOptin/optinDatetime',
+    whatsAppOptinPerformingApp: 'whatsAppOptin/performingApp',
+    directMailOptinIndicator: 'directMailOptin/optinIndicator',
+    directMailOptinDatetime: 'directMailOptin/optinDatetime',
+    directMailOptinPerformingApp: 'directMailOptin/performingApp'
+};
+
+// Configuração das listas: chave de edição (+chave no path), mapa
+// (nome do campo no schema -> propriedade no objeto MDM) e se o append usa array.
+var MDM_LIST_CONFIG = {
+    email: {
+        docKey: 'emailAddresses', itemKeyField: 'email', keyFieldName: 'email', appendAsArray: false, editMode: 'key',
+        fields: {
+            email: 'email', emailContactName: 'contactName',
+            emailIdentifiedUserCredentialIndicator: 'identifiedUserCredentialIndicator',
+            emailInvoiceSubmissionIndicator: 'invoiceSubmissionIndicator',
+            emailExternalSource: 'externalSource', emailInformedbyClientIndicator: 'informedByClientIndicator',
+            emailValildationStatus: 'validationStatus'
+        }
+    },
+    phone: {
+        docKey: 'phones', itemKeyField: 'number', keyFieldName: 'phoneNumber', appendAsArray: false, editMode: 'key',
+        fields: {
+            phoneNumber: 'number', phoneContactName: 'contactName', mainPhoneIndicator: 'mainPhoneIndicator',
+            phoneExternalSource: 'externalSource', phoneInformedByClientIndicator: 'informedByClientIndicator'
+        }
+    },
+    address: {
+        docKey: 'addresses', itemKeyField: 'identifier', keyFieldName: null, appendAsArray: true, editMode: 'index',
+        novoDefaults: { addressCountry: 'BR', addressPostalCodeType: 'logradouro', addressProvince: 'SP' },
+        fields: {
+            addressPostalCode: 'postalCode', addressStreetName: 'streetName', addressStreetNumber: 'streetNumber',
+            addressComplement: 'complement', addressReferencePoint: 'referencePoint', addressSuburb: 'suburb',
+            addressCityName: 'cityName', addressProvince: 'province', addressPostalCodeType: 'postalCodeType',
+            addressPostalCodeDescription: 'postalCodeDescription', addressIbgeCityCode: 'ibgeCityCode',
+            addressCountry: 'country', addressNickname: 'nickname', addressExternalSource: 'externalSource',
+            addressGardenIndicator: 'gardenIndicator', addressPoolIndicator: 'poolIndicator',
+            mainAddressIndicator: 'mainAddressIndicator', addressClientInformedIndicator: 'clientInformedIndicator'
+        }
+    }
+};
+
+// Índice de definições de campo (name -> fld) a partir do schema
+var FIELD_DEFS = {};
+MDM_SECTIONS.forEach(function (s) {
+    (s.fields || []).forEach(function (f) { FIELD_DEFS[f.name] = f; });
+    (s.subgroups || []).forEach(function (sg) { sg.fields.forEach(function (f) { FIELD_DEFS[f.name] = f; }); });
+});
+
+// Campos de identificação que não podem ser alterados na aba Alterar
+var CAMPOS_IDENTIFICADOR = ['inhabitantCpf', 'inhabitantRne', 'inhabitantPassportNumber', 'professionalOrganizationCnpj'];
+
+// Gera o valor de um campo escalar quando o modo selecionado é "Automatico"
+// (reaproveita os geradores globais do cadastro).
+function gerarValorAuto(name) {
+    var now = new Date();
+    var dataIso = now.toISOString().slice(0, 23) + 'Z';
+    var dataPura = now.toISOString().slice(0, 10);
+    switch (name) {
+        case 'creationDate': return dataPura;
+        case 'inhabitantFullName': return gerarNomeCompleto();
+        case 'inhabitantCollaboratorIdentifier': return randInt(50000000, 50099999);
+        case 'inhabitantStateRegistrationFederatedUnit':
+        case 'professionalOrganizationStateRegistrationFederatedUnit':
+            return escolher(UFS_IE_TODAS);
+        case 'inhabitantStateRegistrationNumber':
+        case 'professionalOrganizationStateRegistrationNumber':
+            return gerarInscricaoEstadual(escolher(UFS_IE_TODAS));
+        case 'professionalOrganizationRegisteredName': return gerarNomeEmpresa()[0];
+        case 'professionalOrganizationCommercialName': return gerarNomeEmpresa()[1];
+        case 'socialLoginEmail': return gerarEmail();
+        case 'professionalOrganizationLastCheckDate':
+        case 'professionalOrganizationStateRegistrationLastCheckDate':
+        case 'loyaltyProgramStatusloyaltyCreationDate':
+        case 'loyaltyProgramAdhesionOptinDatetime':
+        case 'emailOptinDatetime':
+        case 'phoneNumberOptinDatetime':
+        case 'smsOptinDatetime':
+        case 'pushNotificationOptinDatetime':
+        case 'whatsAppOptinDatetime':
+        case 'directMailOptinDatetime':
+            return dataIso;
+        default: return '';
+    }
+}
+
+function tipoControleAlterar(tipo) {
+    if (tipo === 'number') return 'number';
+    if (tipo === 'bool' || tipo === 'bool_auto') return 'bool';
+    if (tipo === 'select' || tipo === 'select_auto') return 'select';
+    return 'text'; // text, text_auto, select_manual
+}
+
+function getByPath(obj, path) {
+    if (obj === null || obj === undefined) return undefined;
+    var parts = path.split('/');
+    var cur = obj;
+    for (var i = 0; i < parts.length; i++) {
+        if (cur === null || cur === undefined) return undefined;
+        var k = parts[i];
+        cur = Array.isArray(cur) ? cur[Number(k)] : cur[k];
+    }
+    return cur;
+}
+
+function mesmoValor(a, b) {
+    if (typeof a === 'boolean' || typeof b === 'boolean') return (!!a) === (!!b);
+    if ((a === null || a === undefined) && (b === null || b === undefined)) return true;
+    if (a === null || a === undefined || b === null || b === undefined) return false;
+    return String(a) === String(b);
+}
+
+// Cria um controle de valor (input/select) para um campo do schema, já preenchido.
+// Gera o valor "Automatico" de um campo de item de lista (telefone/e-mail/endereço).
+// Para endereço, gera um endereço coerente uma única vez por card (cache em card._endereco).
+function gerarValorItemAuto(fname, card) {
+    switch (fname) {
+        case 'phoneNumber': return gerarTelefone();
+        case 'email': return gerarEmail();
+        case 'phoneContactName':
+        case 'emailContactName':
+        case 'addressNickname': return gerarNomeCompleto();
+        case 'mainPhoneIndicator':
+        case 'mainAddressIndicator':
+        case 'addressClientInformedIndicator':
+        case 'emailIdentifiedUserCredentialIndicator':
+        case 'emailInvoiceSubmissionIndicator': return true;
+    }
+    // Campos de endereço: gera UM endereço real por card (mesma base de CEPs do
+    // cadastro), coerente com a UF e o tipo de CEP escolhidos no próprio card,
+    // para que CEP/rua/bairro/cidade/UF fiquem consistentes e válidos.
+    if (fname.indexOf('address') === 0) {
+        if (!card._endereco) {
+            var provCtrl = card.querySelector('[data-vfname="addressProvince"]');
+            var tipoCtrl = card.querySelector('[data-vfname="addressPostalCodeType"]');
+            var ufSel = provCtrl ? provCtrl.value : 'Automatico';
+            var tipoSel = tipoCtrl ? tipoCtrl.value : 'Automatico';
+            card._endereco = gerarEndereco(ufSel, tipoSel);
+        }
+        var e = card._endereco;
+        var mapa = {
+            addressPostalCode: e.postalCode, addressStreetName: e.streetName, addressStreetNumber: e.streetNumber,
+            addressComplement: e.complement, addressSuburb: e.suburb, addressCityName: e.cityName,
+            addressProvince: e.province, addressPostalCodeType: e.postalCodeType,
+            addressPostalCodeDescription: e.postalCodeDescription, addressIbgeCityCode: e.ibgeCityCode,
+            addressCountry: 'BR'
+        };
+        if (mapa.hasOwnProperty(fname)) return mapa[fname];
+    }
+    return '';
+}
+
+// Lê o valor de um campo de item de lista dentro de um card, respeitando o
+// combobox de modo (Manual/Automatico) igual aos campos escalares.
+function lerCampoItem(card, fname) {
+    var tipo = (FIELD_DEFS[fname] || {}).type;
+    var modeSel = card.querySelector('.mode-select[data-vfname="' + fname + '"]');
+    if (modeSel) {
+        if (modeSel.value === 'Manual') {
+            var man = card.querySelector('input.manual-value[data-vfname="' + fname + '"]');
+            return man ? man.value : undefined;
+        }
+        return modeSel.value === 'Automatico' ? gerarValorItemAuto(fname, card) : modeSel.value;
+    }
+    var el = card.querySelector('[data-vfname="' + fname + '"]');
+    if (!el) return undefined;
+    if (el.tagName === 'SELECT' && el.value === 'Automatico') return gerarValorItemAuto(fname, card);
+    return lerControleValor(el, tipo);
+}
+
+// Lê o valor de um controle já coagido ao tipo do campo.
+function lerControleValor(el, tipoCampo) {
+    if (!el) return undefined;
+    var kind = tipoControleAlterar(tipoCampo);
+    if (kind === 'number') return el.value === '' ? undefined : Number(el.value);
+    if (kind === 'bool') return el.value === 'true';
+    return el.value;
+}
+
+function criarSecaoBoxAlterar(titulo) {
+    var det = document.createElement('details');
+    det.className = 'mdm-section';
+    det.open = true;
+    var sum = document.createElement('summary');
+    sum.textContent = titulo;
+    det.appendChild(sum);
+    var body = document.createElement('div');
+    body.className = 'section-body';
+    det.appendChild(body);
+    return { el: det, body: body };
+}
+
+// Monta o(s) controle(s) de valor de um campo, no mesmo estilo do cadastro
+// (combobox Automático/Manual, selects com Automático etc.). Quando o cliente
+// tem o valor (temValor), preenche em modo Manual; senão usa o default do schema.
+function montarControlesValor(valDiv, fld, temValor, valorMdm) {
+    var name = fld.name;
+    var t = fld.type;
+    function opt(sel, v, label, selected) {
+        var o = document.createElement('option');
+        o.value = v; o.textContent = label; if (selected) o.selected = true;
+        sel.appendChild(o);
+    }
+
+    if (t === 'text' || t === 'number') {
+        var inp = document.createElement('input');
+        inp.type = (t === 'number') ? 'number' : 'text';
+        inp.setAttribute('name', 'aval__' + name);
+        inp.value = temValor ? (valorMdm === null || valorMdm === undefined ? '' : valorMdm)
+            : (fld.value === null || fld.value === undefined ? '' : fld.value);
+        valDiv.appendChild(inp);
+
+    } else if (t === 'bool') {
+        var selB = document.createElement('select'); selB.setAttribute('name', 'aval__' + name);
+        var bv = temValor ? (valorMdm === true || valorMdm === 'true') : (fld.value === true);
+        opt(selB, 'true', 'Verdadeiro', bv);
+        opt(selB, 'false', 'Falso', !bv);
+        valDiv.appendChild(selB);
+
+    } else if (t === 'bool_auto') {
+        var selBA = document.createElement('select'); selBA.setAttribute('name', 'aval__' + name);
+        var b2 = (valorMdm === true || valorMdm === 'true');
+        opt(selBA, 'Automatico', 'Automático', !temValor);
+        opt(selBA, 'true', 'Verdadeiro', temValor && b2);
+        opt(selBA, 'false', 'Falso', temValor && !b2);
+        valDiv.appendChild(selBA);
+
+    } else if (t === 'select' || t === 'select_auto') {
+        var selS = document.createElement('select'); selS.setAttribute('name', 'aval__' + name);
+        if (t === 'select_auto') opt(selS, 'Automatico', 'Automático', false);
+        var opts = (fld.options || []).slice();
+        var chosen = temValor ? String(valorMdm) : String(fld.value);
+        if (temValor && chosen && opts.indexOf(chosen) === -1) opts.push(chosen);
+        opts.forEach(function (o) { opt(selS, o, o, false); });
+        selS.value = chosen;
+        valDiv.appendChild(selS);
+
+    } else { // text_auto ou select_manual: combobox de modo + campo manual
+        var modeSel = document.createElement('select');
+        modeSel.className = 'mode-select';
+        modeSel.setAttribute('data-target', 'aval__' + name);
+        if (t === 'text_auto') {
+            opt(modeSel, 'Automatico', 'Automático', false);
+            opt(modeSel, 'Manual', 'Manual', false);
+        } else {
+            (fld.options || []).forEach(function (o) { opt(modeSel, o, o, false); });
+        }
+        var manual = document.createElement('input');
+        manual.type = 'text'; manual.className = 'manual-value';
+        manual.setAttribute('name', 'aval__' + name);
+        if (temValor) {
+            manual.value = (valorMdm === null || valorMdm === undefined) ? '' : String(valorMdm);
+            modeSel.value = 'Manual';
+            manual.hidden = false;
+        } else {
+            manual.value = (fld.value === 'Automatico') ? '' : String(fld.value);
+            modeSel.value = (t === 'text_auto') ? 'Automatico' : String(fld.value);
+            manual.hidden = (modeSel.value !== 'Manual');
+        }
+        modeSel.addEventListener('change', function () { manual.hidden = modeSel.value !== 'Manual'; });
+        valDiv.appendChild(modeSel);
+        valDiv.appendChild(manual);
+    }
+}
+
+// Linha de campo escalar: checkbox (flag) + label + controle.
+function criarLinhaEscalar(fld, fields) {
+    if (fld.type === 'cnae') return criarEditorCnae(fld, fields);
+    var path = MDM_SCALAR_PATHS[fld.name];
+    if (!path) return document.createComment('sem path: ' + fld.name);
+
+    var original = getByPath(fields, path);
+    var presente = original !== undefined;
+    var bloqueado = CAMPOS_IDENTIFICADOR.indexOf(fld.name) !== -1;
+
+    var row = document.createElement('div');
+    row.className = 'field-row' + (presente ? '' : ' field-absent');
+
+    var label = document.createElement('label');
+    label.className = 'field-check';
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.setAttribute('name', 'aflag__' + fld.name);
+    cb.checked = presente;
+    var span = document.createElement('span');
+    span.textContent = fld.label;
+    label.appendChild(cb);
+    label.appendChild(span);
+
+    var valDiv = document.createElement('div');
+    valDiv.className = 'field-value';
+
+    if (bloqueado) {
+        // Identificador (CPF/CNPJ/RNE/Passaporte): somente leitura, não editável
+        cb.disabled = true;
+        var ro = document.createElement('input');
+        ro.type = 'text';
+        ro.setAttribute('name', 'aval__' + fld.name);
+        ro.value = presente ? String(original) : '';
+        ro.readOnly = true;
+        ro.style.background = '#eee';
+        valDiv.appendChild(ro);
+        row.appendChild(label);
+        row.appendChild(valDiv);
+        var lock = document.createElement('small');
+        lock.className = 'field-help';
+        lock.textContent = 'não editável';
+        row.appendChild(lock);
+        return row;
+    }
+
+    montarControlesValor(valDiv, fld, presente, original);
+
+    // Ao (des)marcar a flag, atualiza o visual cinza
+    cb.addEventListener('change', function () {
+        row.classList.toggle('field-absent', !cb.checked);
+    });
+
+    row.appendChild(label);
+    row.appendChild(valDiv);
+    if (fld.help) {
+        var help = document.createElement('small');
+        help.className = 'field-help';
+        help.textContent = fld.help;
+        row.appendChild(help);
+    }
+    return row;
+}
+
+// Editor de CNAE (professionalOrganization.registeredActivity): lista de códigos.
+function criarEditorCnae(fld, fields) {
+    var orig = getByPath(fields, 'professionalOrganization/registeredActivity') || [];
+    var presente = orig.length > 0;
+
+    var row = document.createElement('div');
+    row.className = 'field-row' + (presente ? '' : ' field-absent');
+    row.id = 'alterar-cnae-row';
+
+    var label = document.createElement('label');
+    label.className = 'field-check';
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.setAttribute('name', 'aflag__professionalOrganizationRegisteredActivityCode');
+    cb.checked = presente;
+    var span = document.createElement('span');
+    span.textContent = fld.label;
+    label.appendChild(cb);
+    label.appendChild(span);
+    row.appendChild(label);
+
+    var lista = document.createElement('div');
+    lista.className = 'cnae-lista';
+    lista.id = 'alterar-cnae-lista';
+
+    function addCnaeLinha(cod, principal) {
+        var item = document.createElement('div');
+        item.className = 'cnae-item';
+        var inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'cnae-code';
+        inp.value = cod || '';
+        inp.placeholder = 'Código CNAE';
+        var lblMain = document.createElement('label');
+        lblMain.style.display = 'flex';
+        lblMain.style.alignItems = 'center';
+        lblMain.style.gap = '4px';
+        var main = document.createElement('input');
+        main.type = 'checkbox';
+        main.className = 'cnae-main';
+        main.checked = !!principal;
+        lblMain.appendChild(main);
+        lblMain.appendChild(document.createTextNode('principal'));
+        var rem = document.createElement('button');
+        rem.type = 'button';
+        rem.className = 'alterar-item-remove';
+        rem.textContent = 'Remover';
+        rem.addEventListener('click', function () { item.remove(); });
+        item.appendChild(inp);
+        item.appendChild(lblMain);
+        item.appendChild(rem);
+        lista.appendChild(item);
+    }
+
+    orig.forEach(function (a) { addCnaeLinha(a.code, a.mainIndicator); });
+
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'cnae-add';
+    addBtn.textContent = '+ CNAE';
+    addBtn.addEventListener('click', function () { addCnaeLinha('', false); });
+    lista.appendChild(addBtn);
+
+    cb.addEventListener('change', function () { row.classList.toggle('field-absent', !cb.checked); });
+
+    row.appendChild(lista);
+    return row;
+}
+
+// Bloco de lista (e-mail/telefone/endereço) com um card por item + botão adicionar.
+function criarBlocoLista(sectionId, fields) {
+    var cfg = MDM_LIST_CONFIG[sectionId];
+    var sectionDef = MDM_SECTIONS.filter(function (s) { return s.id === sectionId; })[0];
+    var titulo = sectionDef ? sectionDef.title : sectionId;
+    var itens = getByPath(fields, cfg.docKey) || [];
+
+    var block = document.createElement('div');
+    block.className = 'alterar-list-block';
+
+    var header = document.createElement('div');
+    header.className = 'alterar-list-header';
+    var h = document.createElement('span');
+    h.textContent = titulo + ' (' + itens.length + ')';
+    header.appendChild(h);
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'alterar-list-add';
+    addBtn.textContent = '+ Adicionar';
+    header.appendChild(addBtn);
+    block.appendChild(header);
+
+    var body = document.createElement('div');
+    body.className = 'alterar-list-body';
+    body.id = 'alterar-list-' + sectionId;
+    block.appendChild(body);
+
+    itens.forEach(function (item, idx) { body.appendChild(criarCardItem(sectionId, item, false, idx)); });
+
+    addBtn.addEventListener('click', function () {
+        var card = criarCardItem(sectionId, {}, true);
+        body.appendChild(card);
+    });
+
+    return block;
+}
+
+function criarCardItem(sectionId, item, isNovo, index) {
+    var cfg = MDM_LIST_CONFIG[sectionId];
+    var card = document.createElement('div');
+    card.className = 'alterar-item-card' + (isNovo ? ' novo' : '');
+    card.dataset.novo = isNovo ? '1' : '';
+    card.dataset.itemKey = isNovo ? '' : String(item[cfg.itemKeyField] || '');
+    card.dataset.itemIndex = isNovo ? '' : String(index);
+    // Texto amigável no cabeçalho: endereço não tem chave natural legível (só um
+    // hash), então mostra CEP + logradouro; telefone/e-mail mostram a própria chave.
+    var keyDisplay = isNovo ? '' : (sectionId === 'address'
+        ? ((item.postalCode || '') + ' ' + (item.streetName || '')).trim()
+        : String(item[cfg.itemKeyField] || ''));
+
+    var head = document.createElement('div');
+    head.className = 'alterar-item-card-header';
+    if (isNovo) {
+        var novoLbl = document.createElement('span');
+        novoLbl.textContent = 'Novo item';
+        head.appendChild(novoLbl);
+        var rem = document.createElement('button');
+        rem.type = 'button';
+        rem.className = 'alterar-item-remove';
+        rem.textContent = 'Remover';
+        rem.addEventListener('click', function () { card.remove(); });
+        head.appendChild(rem);
+    } else {
+        var keepLbl = document.createElement('label');
+        keepLbl.className = 'alterar-item-keep-label';
+        var keep = document.createElement('input');
+        keep.type = 'checkbox';
+        keep.className = 'alterar-item-keep';
+        keep.checked = true;
+        keepLbl.appendChild(keep);
+        keepLbl.appendChild(document.createTextNode('Manter'));
+        head.appendChild(keepLbl);
+        var keySpan = document.createElement('span');
+        keySpan.className = 'item-key';
+        keySpan.textContent = keyDisplay;
+        head.appendChild(keySpan);
+    }
+    card.appendChild(head);
+
+    Object.keys(cfg.fields).forEach(function (fname) {
+        var fld = FIELD_DEFS[fname];
+        if (!fld) return;
+        var prop = cfg.fields[fname];
+        var ehChave = (cfg.keyFieldName === fname);
+
+        // Define valor inicial e estado da flag (mesma lógica dos campos escalares):
+        // item existente -> presente = flag marcada + valor em Manual; ausente = flag
+        // desmarcada + estilo do cadastro. Novo item -> defaults do schema/novoDefaults.
+        var temValor, valor, flagChecked;
+        if (isNovo) {
+            var temDef = cfg.novoDefaults && cfg.novoDefaults.hasOwnProperty(fname);
+            temValor = temDef;
+            valor = temDef ? cfg.novoDefaults[fname] : '';
+            flagChecked = fld.flag;
+        } else {
+            temValor = item.hasOwnProperty(prop);
+            valor = temValor ? item[prop] : '';
+            flagChecked = temValor;
+        }
+
+        var row = document.createElement('div');
+        row.className = 'field-row' + (flagChecked ? '' : ' field-absent');
+
+        var label = document.createElement('label');
+        label.className = 'field-check';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'item-flag';
+        cb.setAttribute('data-fname', fname);
+        cb.checked = flagChecked;
+        var span = document.createElement('span');
+        span.textContent = fld.label;
+        label.appendChild(cb);
+        label.appendChild(span);
+
+        var valDiv = document.createElement('div');
+        valDiv.className = 'field-value';
+
+        if (!isNovo && ehChave) {
+            // Chave do item existente (número do telefone / e-mail): não editável
+            cb.disabled = true;
+            var ro = document.createElement('input');
+            ro.type = 'text'; ro.readOnly = true; ro.style.background = '#eee';
+            ro.setAttribute('data-vfname', fname);
+            ro.value = (valor === null || valor === undefined) ? '' : String(valor);
+            valDiv.appendChild(ro);
+        } else {
+            montarControlesValor(valDiv, fld, temValor, valor);
+            valDiv.querySelectorAll('select, input').forEach(function (el) { el.setAttribute('data-vfname', fname); });
+        }
+
+        cb.addEventListener('change', function () { row.classList.toggle('field-absent', !cb.checked); });
+
+        row.appendChild(label);
+        row.appendChild(valDiv);
+        if (fld.help) {
+            var h = document.createElement('small'); h.className = 'field-help'; h.textContent = fld.help;
+            row.appendChild(h);
+        }
+        card.appendChild(row);
+    });
+
+    return card;
+}
+
+function determinarTipoCliente(fields) {
+    if (fields && fields.professionalOrganization) return 'PJ';
+    if (fields && fields.inhabitant) return 'PF';
+    return null;
+}
+
+function construirFormAlterar(fields) {
+    var form = document.getElementById('form-alterar');
+    form.innerHTML = '';
+    form.style.display = 'block';
+    var tipo = determinarTipoCliente(fields);
+
+    MDM_SECTIONS.forEach(function (section) {
+        // Só renderiza a seção PF ou PJ correspondente ao tipo do cliente
+        if (section.id === 'inhabitant' && tipo === 'PJ') return;
+        if (section.id === 'organization' && tipo === 'PF') return;
+
+        if (section.kind === 'plain' || section.kind === 'group_master') {
+            var box = criarSecaoBoxAlterar(section.title);
+            section.fields.forEach(function (fld) {
+                box.body.appendChild(criarLinhaEscalar(fld, fields));
+            });
+            form.appendChild(box.el);
+        } else if (section.kind === 'list') {
+            form.appendChild(criarBlocoLista(section.id, fields));
+            (section.subgroups || []).forEach(function (sg) {
+                var box = criarSecaoBoxAlterar(sg.title);
+                sg.fields.forEach(function (fld) {
+                    box.body.appendChild(criarLinhaEscalar(fld, fields));
+                });
+                form.appendChild(box.el);
+            });
+        }
+    });
+}
+
+// -------- Geração do JSON Patch (diff formulário x original) --------
+function lerFlagAlterar(name) {
+    var el = document.querySelector('#form-alterar [name="aflag__' + name + '"]');
+    return el ? el.checked : false;
+}
+
+function lerValorAlterar(name) {
+    var modeSel = document.querySelector('#form-alterar .mode-select[data-target="aval__' + name + '"]');
+    if (modeSel && modeSel.value !== 'Manual') {
+        // Automatico -> gera; outros modos (ex.: Alfanumerico do CNPJ) retornam o próprio modo
+        return modeSel.value === 'Automatico' ? gerarValorAuto(name) : modeSel.value;
+    }
+    var el = document.querySelector('#form-alterar [name="aval__' + name + '"]');
+    var v = lerControleValor(el, (FIELD_DEFS[name] || {}).type);
+    if (v === 'Automatico') return gerarValorAuto(name);
+    return v;
+}
+
+function diffEscalares(ops) {
+    Object.keys(MDM_SCALAR_PATHS).forEach(function (name) {
+        if (CAMPOS_IDENTIFICADOR.indexOf(name) !== -1) return; // identificador não é alterável
+        var el = document.querySelector('#form-alterar [name="aflag__' + name + '"]');
+        if (!el) return; // campo não renderizado (ex.: seção PF/PJ oposta)
+        var path = MDM_SCALAR_PATHS[name];
+        var jsonPath = '/fields/' + path;
+        var presente = el.checked;
+        var antes = getByPath(ALTERAR_ORIGINAL, path);
+        var existia = antes !== undefined;
+        var valor = lerValorAlterar(name);
+
+        if (presente && !existia) {
+            ops.push({ op: 'add', path: jsonPath, value: valor });
+        } else if (presente && existia) {
+            if (!mesmoValor(valor, antes)) ops.push({ op: 'replace', path: jsonPath, value: valor });
+        } else if (!presente && existia) {
+            ops.push({ op: 'remove', path: jsonPath });
+        }
+    });
+}
+
+// Caso especial: se a IE (numbers) não existia no cliente e o usuário adicionou
+// campos numbers/0/*, agrupa num único add do array numbers.
+function corrigirNumbersIE(ops) {
+    var origNumbers = getByPath(ALTERAR_ORIGINAL, 'professionalOrganization/stateRegistration/numbers');
+    if (origNumbers !== undefined) return;
+    var prefixo = '/fields/professionalOrganization/stateRegistration/numbers/0/';
+    var obj = {};
+    var achou = false;
+    for (var i = ops.length - 1; i >= 0; i--) {
+        if (ops[i].path.indexOf(prefixo) === 0) {
+            achou = true;
+            if (ops[i].op !== 'remove') {
+                var prop = ops[i].path.substring(prefixo.length);
+                obj[prop] = ops[i].value;
+            }
+            ops.splice(i, 1);
+        }
+    }
+    if (achou && Object.keys(obj).length) {
+        ops.push({ op: 'add', path: '/fields/professionalOrganization/stateRegistration/numbers', value: [obj] });
+    }
+}
+
+function diffCnae(ops) {
+    var cb = document.querySelector('#form-alterar [name="aflag__professionalOrganizationRegisteredActivityCode"]');
+    if (!cb) return;
+    var path = '/fields/professionalOrganization/registeredActivity';
+    var orig = getByPath(ALTERAR_ORIGINAL, 'professionalOrganization/registeredActivity');
+    var existia = orig !== undefined;
+
+    if (!cb.checked) {
+        if (existia) ops.push({ op: 'remove', path: path });
+        return;
+    }
+    var lista = document.getElementById('alterar-cnae-lista');
+    var itens = [];
+    if (lista) {
+        lista.querySelectorAll('.cnae-item').forEach(function (item) {
+            var code = item.querySelector('.cnae-code').value.trim();
+            if (!code) return;
+            itens.push({
+                code: code,
+                mainIndicator: item.querySelector('.cnae-main').checked,
+                description: '(gerado automaticamente)'
+            });
+        });
+    }
+    if (itens.length === 0) return;
+    // Compara só por código + indicador principal (ignora ordem das chaves e a descrição fixa)
+    function normCnae(arr) {
+        return (arr || []).map(function (a) { return String(a.code) + '|' + (!!a.mainIndicator); }).join(',');
+    }
+    if (!existia) {
+        ops.push({ op: 'add', path: path, value: itens });
+    } else if (normCnae(itens) !== normCnae(orig)) {
+        ops.push({ op: 'replace', path: path, value: itens });
+    }
+}
+
+function diffLista(ops, sectionId) {
+    var cfg = MDM_LIST_CONFIG[sectionId];
+    var origItems = getByPath(ALTERAR_ORIGINAL, cfg.docKey) || [];
+    var origByKey = {};
+    origItems.forEach(function (it) { origByKey[String(it[cfg.itemKeyField])] = it; });
+
+    var body = document.getElementById('alterar-list-' + sectionId);
+    if (!body) return;
+    var cards = body.querySelectorAll('.alterar-item-card');
+    var removesIndex = []; // editMode 'index': coleta para remover em ordem decrescente
+
+    function flagMarcada(card, fname) {
+        var el = card.querySelector('.item-flag[data-fname="' + fname + '"]');
+        return el ? el.checked : false;
+    }
+
+    cards.forEach(function (card) {
+        var isNovo = card.dataset.novo === '1';
+
+        if (isNovo) {
+            var novo = {};
+            Object.keys(cfg.fields).forEach(function (fname) {
+                if (!flagMarcada(card, fname)) return; // só campos com flag de envio marcada
+                var prop = cfg.fields[fname];
+                var lido = lerCampoItem(card, fname);
+                if (lido === undefined || lido === '') return;
+                novo[prop] = lido;
+            });
+            if (Object.keys(novo).length) {
+                ops.push({ op: 'add', path: '/fields/' + cfg.docKey + '/-', value: cfg.appendAsArray ? [novo] : novo });
+            }
+            return;
+        }
+
+        var keepEl = card.querySelector('.alterar-item-keep');
+        var manter = keepEl ? keepEl.checked : true;
+        var idx = card.dataset.itemIndex;
+        var chave = card.dataset.itemKey || '';
+        var orig = (cfg.editMode === 'index') ? (origItems[Number(idx)] || {}) : (origByKey[chave] || {});
+
+        if (!manter) {
+            if (cfg.editMode === 'index') removesIndex.push(Number(idx));
+            else ops.push({ op: 'remove', path: '/fields/' + cfg.docKey + '/' + chave });
+            return;
+        }
+
+        // Por campo: flag marcada + valor alterado/novo -> replace/add; flag desmarcada
+        // de um campo que existia -> remove do subcampo. Modo 'index' usa path por
+        // subcampo; modo 'key' acumula num replace parcial (+ removes de subcampo à parte).
+        var alteradoKey = {};
+        Object.keys(cfg.fields).forEach(function (fname) {
+            if (fname === cfg.keyFieldName) return; // chave não editável
+            var prop = cfg.fields[fname];
+            var existiaProp = Object.prototype.hasOwnProperty.call(orig, prop);
+            var marcada = flagMarcada(card, fname);
+
+            if (!marcada) {
+                if (existiaProp) {
+                    if (cfg.editMode === 'index') ops.push({ op: 'remove', path: '/fields/' + cfg.docKey + '/' + idx + '/' + prop });
+                    else ops.push({ op: 'remove', path: '/fields/' + cfg.docKey + '/' + chave + '/' + prop });
+                }
+                return;
+            }
+
+            var lido = lerCampoItem(card, fname);
+            if (lido === undefined) return;
+            if (existiaProp && mesmoValor(lido, orig[prop])) return; // sem mudança
+            if (!existiaProp && lido === '') return; // campo novo vazio: ignora
+
+            if (cfg.editMode === 'index') {
+                ops.push({ op: existiaProp ? 'replace' : 'add', path: '/fields/' + cfg.docKey + '/' + idx + '/' + prop, value: lido });
+            } else {
+                alteradoKey[prop] = lido;
+            }
+        });
+        if (cfg.editMode !== 'index' && Object.keys(alteradoKey).length) {
+            ops.push({ op: 'replace', path: '/fields/' + cfg.docKey + '/' + chave, value: alteradoKey });
+        }
+    });
+
+    // Remoções por índice em ordem decrescente para não deslocar os índices menores
+    removesIndex.sort(function (a, b) { return b - a; }).forEach(function (i) {
+        ops.push({ op: 'remove', path: '/fields/' + cfg.docKey + '/' + i });
+    });
+}
+
+async function gerarPatchAlteracao() {
+    if (!ALTERAR_ORIGINAL) {
+        mostrarAlertaMdm('alerta-alterar', 'Busque um cliente antes de gerar o payload.', 'erro');
+        return;
+    }
+    await carregarDatasetCeps(); // garante a base real de CEPs p/ endereços novos coerentes
+    document.getElementById('alerta-alterar').style.display = 'none';
+    var ops = [];
+    diffEscalares(ops);
+    corrigirNumbersIE(ops);
+    diffCnae(ops);
+    ['email', 'phone', 'address'].forEach(function (k) { diffLista(ops, k); });
+
+    var tipo = determinarTipoCliente(ALTERAR_ORIGINAL) || '?';
+    alterarPayloads = [{
+        payload: ops,
+        administrativeIdentifier: ALTERAR_ID,
+        tipo: tipo,
+        expandido: true,
+        status: ops.length ? (ops.length + ' operação(ões)') : 'Sem alterações',
+        statusClasse: ops.length ? 'status-nao-enviado' : 'status-nao-enviado'
+    }];
+    renderizarListaAlterar();
+}
+
+function renderizarListaAlterar() {
+    var container = document.getElementById('alterar-payload-list');
+    container.innerHTML = '';
+    alterarPayloads.forEach(function (item) {
+        var itemDiv = document.createElement('div');
+        itemDiv.className = 'payload-item';
+
+        var header = document.createElement('div');
+        header.className = 'payload-item-header';
+        var tipoSpan = document.createElement('span');
+        tipoSpan.className = 'payload-item-tipo';
+        tipoSpan.textContent = item.tipo;
+        var idSpan = document.createElement('span');
+        idSpan.className = 'payload-item-index';
+        idSpan.textContent = item.administrativeIdentifier || '';
+        var statusSpan = document.createElement('span');
+        statusSpan.className = 'payload-item-status ' + item.statusClasse;
+        statusSpan.style.marginLeft = 'auto';
+        statusSpan.textContent = item.status;
+        header.appendChild(tipoSpan);
+        header.appendChild(idSpan);
+        header.appendChild(statusSpan);
+        header.addEventListener('click', function () {
+            item.expandido = !item.expandido;
+            renderizarListaAlterar();
+        });
+
+        var body = document.createElement('div');
+        body.className = 'payload-item-body' + (item.expandido ? ' open' : '');
+        var pre = document.createElement('pre');
+        pre.textContent = JSON.stringify(item.payload, null, 2);
+        body.appendChild(pre);
+        if (item.retorno) {
+            var retornoPre = document.createElement('pre');
+            retornoPre.style.marginTop = '10px';
+            retornoPre.style.borderTop = '1px dashed #ccc';
+            retornoPre.style.paddingTop = '10px';
+            retornoPre.textContent = 'Retorno da API:\n' + formatarBody(item.retorno);
+            body.appendChild(retornoPre);
+        }
+        itemDiv.appendChild(header);
+        itemDiv.appendChild(body);
+        container.appendChild(itemDiv);
+    });
+}
+
+async function enviarAlteracoes() {
+    if (!alterarPayloads.length || !alterarPayloads[0].payload.length) {
+        mostrarAlertaMdm('alerta-alterar', 'Gere um payload com ao menos uma alteração antes de enviar.', 'erro');
+        return;
+    }
+    document.getElementById('alerta-alterar').style.display = 'none';
+    var item = alterarPayloads[0];
+    item.status = 'Enviando...';
+    item.statusClasse = 'status-enviando';
+    renderizarListaAlterar();
+    try {
+        var bodyData = new URLSearchParams();
+        bodyData.append('payload', JSON.stringify(item.payload));
+        bodyData.append('administrativeIdentifier', item.administrativeIdentifier || '');
+        var resp = await fetch('/mdm-atualizar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: bodyData
+        });
+        var data = await resp.json();
+        if (data.sucesso) {
+            item.retorno = data.retorno;
+            item.status = String(data.retorno.status_code);
+            item.statusClasse = (data.retorno.status_code >= 200 && data.retorno.status_code < 300) ? 'status-sucesso' : 'status-erro';
+        } else {
+            item.status = 'Erro: ' + data.mensagem;
+            item.statusClasse = 'status-erro';
+        }
+    } catch (e) {
+        item.status = 'Erro: ' + e;
+        item.statusClasse = 'status-erro';
+    }
+    renderizarListaAlterar();
+}
+
+function buscarClienteAlterar() {
+    var id = document.getElementById('alterar-identificador').value.trim();
+    if (!id) {
+        mostrarAlertaMdm('alerta-alterar', 'Informe o CPF/CNPJ do cliente.', 'erro');
+        return;
+    }
+    document.getElementById('alerta-alterar').style.display = 'none';
+    var statusEl = document.getElementById('alterar-status-busca');
+    statusEl.textContent = 'Buscando...';
+    document.getElementById('form-alterar').style.display = 'none';
+    document.getElementById('alterar-actions').style.display = 'none';
+    document.getElementById('alterar-payload-list').innerHTML = '';
+    ALTERAR_ORIGINAL = null;
+
+    var bodyData = new URLSearchParams();
+    bodyData.append('administrativeIdentifier', id);
+    fetch('/mdm-consultar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: bodyData
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+            if (!d.sucesso) {
+                statusEl.textContent = '';
+                mostrarAlertaMdm('alerta-alterar', 'Erro: ' + d.mensagem, 'erro');
+                return;
+            }
+            var sc = d.retorno.status_code;
+            if (sc < 200 || sc >= 300) {
+                statusEl.textContent = '';
+                mostrarAlertaMdm('alerta-alterar', 'Cliente não encontrado (status ' + sc + ').', 'erro');
+                return;
+            }
+            var parsed;
+            try { parsed = JSON.parse(d.retorno.body); }
+            catch (e) { statusEl.textContent = ''; mostrarAlertaMdm('alerta-alterar', 'Retorno não é um JSON válido.', 'erro'); return; }
+            var fields = (parsed && parsed.data && parsed.data.fields) ? parsed.data.fields
+                : (parsed && parsed.fields) ? parsed.fields : parsed;
+            if (!fields || typeof fields !== 'object') {
+                statusEl.textContent = '';
+                mostrarAlertaMdm('alerta-alterar', 'Não foi possível localizar os dados do cliente no retorno.', 'erro');
+                return;
+            }
+            ALTERAR_ORIGINAL = fields;
+            ALTERAR_ID = fields.mainAdministrativeIdentifier || id;
+            var tipo = determinarTipoCliente(fields) || '?';
+            carregarDatasetCeps(); // pré-carrega a base de CEPs p/ gerar endereços "Automatico"
+            construirFormAlterar(fields);
+            document.getElementById('alterar-actions').style.display = 'block';
+            statusEl.textContent = 'Cliente carregado: ' + ALTERAR_ID + ' (' + tipo + '). Ajuste os campos e clique em "Gerar Payload de Alteração".';
+        })
+        .catch(function (e) { statusEl.textContent = ''; mostrarAlertaMdm('alerta-alterar', 'Erro: ' + e, 'erro'); });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('btn-buscar-alterar').addEventListener('click', buscarClienteAlterar);
+    document.getElementById('btn-gerar-patch').addEventListener('click', gerarPatchAlteracao);
+    document.getElementById('btn-enviar-patch').addEventListener('click', enviarAlteracoes);
+    document.getElementById('alterar-identificador').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); buscarClienteAlterar(); }
+    });
+});
+</script>
 </head>
 <body>
 <h2>MDM &mdash; Cadastro e Consulta de Clientes</h2>
 
 <div class="mdm-subtabs">
     <button class="mdm-subtab-btn" onclick="abrirSubAbaMdm(event, 'mdm-cadastrar')">Cadastrar</button>
+    <button class="mdm-subtab-btn" onclick="abrirSubAbaMdm(event, 'mdm-alterar')">Alterar</button>
     <button class="mdm-subtab-btn" onclick="abrirSubAbaMdm(event, 'mdm-consultar')">Consultar</button>
 </div>
 
@@ -1136,6 +2290,17 @@ function consultarCliente() {
             <div class="block-qtd">
                 <label for="qtd_clientes">Quantidade de clientes</label>
                 <input type="number" min="1" id="qtd_clientes" name="qtd_clientes" value="1">
+            </div>
+        </div>
+        <div class="block-header presets-pj presets-uf" id="presets-uf">
+            <div class="tipo-cliente-opcoes">
+                <span class="preset-label">UF (Estado)</span>
+                <select id="preset-uf" class="preset-uf-select">
+                    {% for uf in ufs_ie %}
+                    <option value="{{ uf }}" {% if uf == 'SP' %}selected{% endif %}>{{ uf }}</option>
+                    {% endfor %}
+                </select>
+                <span class="preset-uf-hint">preenche a UF do endereço e da Inscrição Estadual</span>
             </div>
         </div>
         <div class="block-header presets-pj" id="presets-pj" style="display:none;">
@@ -1246,6 +2411,23 @@ function consultarCliente() {
     </div>
     <div id="payload-list"></div>
     </form>
+</div>
+
+<!-- ===================== ALTERAR ===================== -->
+<div id="mdm-alterar" class="mdm-content">
+    <div id="alerta-alterar" style="display:none;"></div>
+    <div class="consulta-form">
+        <input type="text" id="alterar-identificador" placeholder="CPF ou CNPJ do cliente a alterar">
+        <button type="button" id="btn-buscar-alterar">Buscar cliente</button>
+    </div>
+    <div id="alterar-status-busca" class="alterar-status-busca"></div>
+    <form id="form-alterar" onsubmit="return false;" style="display:none;"></form>
+    <div class="actions-bar" id="alterar-actions" style="display:none;">
+        <button type="button" id="btn-gerar-patch">Gerar Payload de Alteração</button>
+        <button type="button" id="btn-enviar-patch" class="btn-enviar">Enviar Alteração</button>
+        <div class="note">Compara o formulário com os dados atuais do cliente e gera um JSON Patch (op/path/value): campos alterados viram <b>replace</b>, campos marcados que não existiam viram <b>add</b> e campos desmarcados que existiam viram <b>remove</b>. Itens de lista (e-mail/telefone/endereço) podem ser editados, removidos ou adicionados. Revise o payload antes de enviar.</div>
+    </div>
+    <div id="alterar-payload-list"></div>
 </div>
 
 <!-- ===================== CONSULTAR ===================== -->

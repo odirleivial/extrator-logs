@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
-**Data:** 08 de Julho de 2026  
-**Versão:** 2.13.0
+**Data:** 17 de Julho de 2026  
+**Versão:** 2.17.1
 
 ---
 
@@ -18,6 +18,47 @@ A versão é definida em `version.py` e propagada automaticamente para o footer 
 ---
 
 ## 📋 Histórico de Versões
+
+### 2.17.1 — 17/07/2026
+- Aba MDM (Alterar): corrige a geração de endereço novo, que gerava dados de uma UF aleatória mesmo com outra UF selecionada (CEP/rua/cidade incoerentes). Agora usa a mesma base real de CEPs do cadastro e sorteia um endereço válido de acordo com a UF (e o tipo de CEP) escolhidos no card; o payload só é gerado após a base de CEPs estar carregada
+
+### 2.17.0 — 17/07/2026
+- Aba MDM (Cadastrar): novo preset **UF (Estado)** na seção laranja, exibido tanto para PF quanto PJ, com **SP** como padrão. Ao escolher uma UF, os campos que usam estado são pré-configurados com ela: UF do endereço (`addressProvince`) e UF da Inscrição Estadual de PF e PJ (`...StateRegistrationFederatedUnit`). UFs sem CEP na base (ex.: AC) não alteram o campo de endereço, apenas os de IE
+
+### 2.16.0 — 17/07/2026
+- Aba MDM (Cadastrar e Alterar): geração de **Inscrição Estadual válida para as 27 UFs** (26 estados + DF), seguindo as regras de dígito verificador do Sintegra. O algoritmo foi portado fielmente da biblioteca js-brasil e validado gerando 200 IEs por UF (todas passam na verificação de idempotência do validador)
+- Os comboboxes de UF da Inscrição Estadual (PF e PJ), no cadastro e na alteração, passam a listar todas as 27 UFs (antes só SP, DF, TO, MT, MG, RO)
+
+### 2.15.1 — 17/07/2026
+- Aba MDM (Cadastrar): ajustes de alinhamento — botão **Copiar** alinhado com o campo de status (status com largura fixa) na lista de payloads, e rótulos dos presets (Isento de Inscrição Estadual / Filial) centralizados verticalmente com os radio buttons
+
+### 2.15.0 — 17/07/2026
+- Aba MDM (Alterar): campos passam a usar a **mesma interface do cadastro** — combobox Automático/Manual, selects com Automático etc. Quando o cliente tem o valor, ele é preenchido em modo **Manual**; quando não tem, o campo aparece igual ao cadastro (modo Automático, mesmas opções). Vale para os campos escalares e para os campos dos itens de lista (e-mail, telefone, endereço)
+- **CPF, CNPJ, RNE e PASSAPORTE** ficam somente-leitura (não podem ser alterados nem removidos)
+- Itens de lista agora têm uma **flag de envio por campo** (igual ao cadastro): campo com flag marcada e valor alterado gera `replace`/`add`; campo com flag desmarcada que existia gera `remove` do subcampo; em item novo, só os campos com flag marcada entram. Campos em modo Automático são gerados na hora (telefone, e-mail, nomes, datas, endereço coerente a partir da base de CEPs)
+
+### 2.14.3 — 17/07/2026
+- Aba MDM (Alterar): corrige erro 500 (`NullPointerException`) ao editar/remover endereços. Endereço não tem chave natural (o `identifier` é só um hash do sistema que a API não indexa), então a edição de endereços passou a usar **índice do array** no path (JSON Patch padrão): `replace /fields/addresses/<índice>/<subcampo>` e `remove /fields/addresses/<índice>` (remoções em ordem decrescente para não deslocar os índices). Telefone e e-mail continuam por chave natural (`/fields/phones/<número>`, `/fields/emailAddresses/<email>`)
+
+### 2.14.2 — 17/07/2026
+- Aba MDM (Alterar): UF (`province`) de endereços novos passa a vir com `SP` por padrão
+
+### 2.14.1 — 17/07/2026
+- Aba MDM (Alterar): endereços **novos** já vêm com `country: "BR"` e `postalCodeType: "logradouro"` preenchidos por padrão
+
+### 2.14.0 — 17/07/2026
+- **Nova sub-aba MDM "Alterar"** — edição de clientes existentes via JSON Patch:
+  - Campo para digitar CPF ou CNPJ; o BEC busca o cliente no MDM (mesma consulta da aba Consultar) e monta um formulário idêntico ao de cadastro já preenchido com os dados retornados (`data.fields`)
+  - Campos que **não** vieram do MDM aparecem com o valor padrão, a flag desmarcada e o rótulo em cinza; marcar a flag adiciona o campo (`add`), desmarcar um campo existente remove (`remove`) e alterar o valor gera `replace`
+  - Só é renderizada a seção Pessoa Física ou Jurídica correspondente ao tipo do cliente consultado
+  - Listas (e-mail, telefone, endereço): cada item existente vira um card editável (só com os campos que o MDM retornou), com opção **Manter** (desmarcar = remover o item) e possibilidade de **+ Adicionar** novos itens. Edição de item existente usa `replace` em `/fields/<lista>/<chave>` (telefone=número, e-mail=e-mail, endereço=identifier) enviando apenas os campos alterados; item novo usa `add` em `/fields/<lista>/-` (endereço com `value` em array, telefone/e-mail com `value` em objeto, seguindo os exemplos válidos)
+  - CNAE (atividades econômicas) editável como lista de códigos com indicador principal
+  - Botão **Gerar Payload de Alteração** compara o formulário com os dados originais e produz o JSON Patch (RFC 6902) com apenas as diferenças; **Enviar Alteração** faz `PATCH .../items/{id}?jsonPatch=true`
+  - Histórico das alterações gravado em `log/patch_mdm_<data>.csv` (um arquivo por dia), separado do histórico de cadastros (`post_mdm_<data>.csv`)
+- Nova rota backend `/mdm-atualizar` e função `atualizar_cliente_mdm` em `mdm.py`
+
+### 2.13.1 — 17/07/2026
+- Aba MDM (Cadastrar): cada linha da lista de payloads gerados agora tem um botão **Copiar**, que copia o `administrativeIdentifier` (CPF, RNE, Passaporte ou CNPJ) daquele cliente para a área de transferência (usa a Clipboard API com fallback via `execCommand` para navegadores/webviews sem suporte)
 
 ### 2.13.0 — 08/07/2026
 - **Agente — email de Status PDV reestruturado:**

@@ -21,11 +21,15 @@ else:
 LOG_DIR = os.path.join(_BASE_DIR, 'log')
 
 
-def registrar_historico_mdm(administrative_identifier, payload_json, status_code, retorno_texto):
-    """Grava uma linha no histórico diário de cadastros (log/post_mdm_<data>.csv)."""
+def registrar_historico_mdm(administrative_identifier, payload_json, status_code, retorno_texto, prefixo='post'):
+    """Grava uma linha no histórico diário de operações MDM.
+
+    prefixo='post'  -> log/post_mdm_<data>.csv  (cadastros / POST)
+    prefixo='patch' -> log/patch_mdm_<data>.csv (alterações / PATCH via JSON Patch)
+    """
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
-        nome_arquivo = f"post_mdm_{datetime.now().strftime('%Y-%m-%d')}.csv"
+        nome_arquivo = f"{prefixo}_mdm_{datetime.now().strftime('%Y-%m-%d')}.csv"
         caminho = os.path.join(LOG_DIR, nome_arquivo)
         arquivo_novo = not os.path.exists(caminho)
 
@@ -65,7 +69,9 @@ def f(name, label, type_, flag=False, value='', options=None, help_=''):
     }
 
 
-UFS_IE = ['SP', 'DF', 'TO', 'MT', 'MG', 'RO']
+# Todas as 27 UFs (26 estados + DF) — geração de IE válida via regras Sintegra
+UFS_IE = ['AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG',
+          'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO']
 
 # UFs realmente presentes na base de CEPs (static/data/base_de_ceps.json).
 # Não inclui AC, que não tem nenhum registro na base de referência.
@@ -109,7 +115,7 @@ SECTIONS = [
                 'personalOrganizer', 'bricklayer', 'locksmith', 'potter', 'plumber',
                 'interiorDesigner', 'architect']),
             f('inhabitantStateRegistrationNumber', 'Número Inscrição Estadual (PF)', 'text_auto', False, 'Automatico',
-              help_="Geração automática disponível apenas para as UFs: SP, DF, TO, MT, MG, RO"),
+              help_="Geração automática de IE válida (regras Sintegra) para todas as 27 UFs"),
             f('inhabitantStateRegistrationFederatedUnit', 'UF Inscrição Estadual (PF)', 'select_auto', False, 'Automatico', UFS_IE),
         ],
     },
@@ -310,7 +316,7 @@ def pagina_mdm(app, ler_properties, config_file):
     logger.debug("Página 'MDM' acessada")
     props = ler_properties(config_file)
     schema = props.get('mdm_api_schema', 'lmbr_client_preprod')
-    return render_template('mdm.html', sections=SECTIONS, schema=schema)
+    return render_template('mdm.html', sections=SECTIONS, schema=schema, ufs_ie=UFS_IE)
 
 
 def consultar_cliente_mdm(app, ler_properties, config_file):
@@ -376,4 +382,45 @@ def cadastrar_cliente_mdm(app, ler_properties, config_file):
     except Exception as e:
         logger.error(f"Erro ao cadastrar cliente MDM: {str(e)}")
         registrar_historico_mdm(administrative_identifier, payload_json, 'ERRO', str(e))
+        return jsonify({'sucesso': False, 'mensagem': f'Erro no envio: {str(e)}'}), 500
+
+
+def atualizar_cliente_mdm(app, ler_properties, config_file):
+    """Envia (PATCH) um JSON Patch de alteração de cliente para a API MDM (Facade).
+
+    A API espera o cabeçalho ?jsonPatch=true e um corpo no formato RFC 6902
+    (array de operações op/path/value), diferente do cadastro (POST completo).
+    """
+    props = ler_properties(config_file)
+    payload_json = request.form.get('payload', '').strip()
+    administrative_identifier = request.form.get('administrativeIdentifier', '').strip()
+
+    if not payload_json:
+        return jsonify({'sucesso': False, 'mensagem': 'Payload de alteração vazio.'}), 400
+    if not administrative_identifier:
+        return jsonify({'sucesso': False, 'mensagem': 'Identificador (CPF/CNPJ) do cliente não informado.'}), 400
+
+    url_base = props.get('mdm_api_url', '').strip()
+    apikey = props.get('mdm_api_apikey', '').strip()
+
+    if not url_base or not apikey:
+        return jsonify({'sucesso': False, 'mensagem': 'Configuração da API MDM não encontrada em secure.properties.'}), 400
+
+    url = url_base.rstrip('/') + '/' + administrative_identifier + '?jsonPatch=true'
+    headers = {'Apikey': apikey, 'Accept': 'application/json', 'Content-Type': 'application/json'}
+
+    try:
+        logger.info(f"Enviando alteração (PATCH) de cliente MDM: {administrative_identifier}")
+        resp = requests.patch(url, headers=headers, data=payload_json, timeout=30, verify=False)
+        retorno = {
+            'status_code': resp.status_code,
+            'headers': dict(resp.headers),
+            'body': resp.text,
+        }
+        logger.info(f"Alteração MDM {administrative_identifier} retornou status {resp.status_code}")
+        registrar_historico_mdm(administrative_identifier, payload_json, resp.status_code, resp.text, prefixo='patch')
+        return jsonify({'sucesso': True, 'retorno': retorno})
+    except Exception as e:
+        logger.error(f"Erro ao alterar cliente MDM {administrative_identifier}: {str(e)}")
+        registrar_historico_mdm(administrative_identifier, payload_json, 'ERRO', str(e), prefixo='patch')
         return jsonify({'sucesso': False, 'mensagem': f'Erro no envio: {str(e)}'}), 500

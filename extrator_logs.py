@@ -10,7 +10,7 @@ from datetime import datetime
 from logger import logger
 from parametrizacao_pdv import pagina_configurar_pdv, enviar_configuracao_pdv, verificar_configuracao_pdv, relatorio_parametrizacao, versao_pdv, reiniciar_pdv, fechar_pdv
 from request_api import (pagina_requisicao_api,fazer_requisicao_api,salvar_retorno)
-from mdm import pagina_mdm, consultar_cliente_mdm, cadastrar_cliente_mdm
+from mdm import pagina_mdm, consultar_cliente_mdm, cadastrar_cliente_mdm, atualizar_cliente_mdm
 
 # BUNDLE_DIR: recursos somente-leitura empacotados (templates, static)
 # APP_DIR:    pasta do .exe / pasta do script — para arquivos editáveis (config, output, log)
@@ -449,6 +449,10 @@ def mdm_consultar_route():
 @app.route('/mdm-cadastrar', methods=['POST'])
 def mdm_cadastrar_route():
     return cadastrar_cliente_mdm(app, ler_config_completo, CONFIG_FILE)
+
+@app.route('/mdm-atualizar', methods=['POST'])
+def mdm_atualizar_route():
+    return atualizar_cliente_mdm(app, ler_config_completo, CONFIG_FILE)
 
 
 def converterParaArray(valor):
