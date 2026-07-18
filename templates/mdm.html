@@ -35,11 +35,12 @@
     .tipo-cliente-opcoes { display: flex; gap: 22px; flex-wrap: wrap; }
     .tipo-cliente-radio { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #fff; cursor: pointer; }
     .tipo-cliente-radio input { width: 16px; height: 16px; cursor: pointer; }
-    .presets-pj { flex-direction: column; align-items: flex-start; gap: 10px; border-top: 1px solid rgba(255,255,255,0.35); }
-    .presets-pj .tipo-cliente-opcoes { gap: 16px; align-items: center; }
-    .preset-uf-select { padding: 6px 8px; border-radius: 4px; border: 1px solid #ccc; min-width: 90px; font-size: 0.9rem; background: #fff; }
+    .presets-block { flex-direction: column; align-items: flex-start; gap: 10px; border-top: 1px solid rgba(255,255,255,0.35); }
+    .preset-row { display: flex; align-items: center; gap: 16px; width: 100%; }
+    .preset-row .tipo-cliente-radio { margin: 0; }
+    .preset-label { color: #fff; font-weight: 700; width: 240px; min-width: 240px; line-height: 1.3; }
+    .preset-uf-select { width: 130px; flex: none; padding: 5px 8px; border-radius: 4px; border: 1px solid #ccc; font-size: 0.9rem; background: #fff; }
     .preset-uf-hint { color: rgba(255,255,255,0.9); font-size: 0.82rem; font-style: italic; }
-    .preset-label { color: #fff; font-weight: 700; min-width: 220px; display: flex; align-items: center; }
 
     /* Blocos em destaque: Endereço / Telefone / E-mail / LoyaltyProgram */
     .mdm-block { margin-bottom: 16px; border: 1px solid #4a90e2; border-radius: 6px; overflow: hidden; }
@@ -83,7 +84,7 @@
     .payload-item-header input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
     .payload-item-tipo { font-weight: 700; color: #1e3a5f; min-width: 30px; }
     .payload-item-index { color: #888; min-width: 60px; }
-    .payload-item-copy { margin-left: auto; border: 1px solid #ccc; background: #fff; color: #555; border-radius: 4px; padding: 3px 8px; font-size: 0.8rem; cursor: pointer; line-height: 1.2; }
+    .payload-item-copy { margin: 0 0 0 auto; border: 1px solid #ccc; background: #fff; color: #555; border-radius: 4px; padding: 3px 8px; font-size: 0.8rem; cursor: pointer; line-height: 1.2; }
     .payload-item-copy:hover { background: #f0f4f8; border-color: #1e3a5f; color: #1e3a5f; }
     .payload-item-copy.copiado { background: #d4edda; border-color: #1e7e34; color: #1e7e34; }
     .payload-item-status { font-weight: 600; padding: 3px 10px; border-radius: 12px; font-size: 0.85rem; min-width: 96px; text-align: center; }
@@ -116,7 +117,7 @@
     .field-row.field-absent > .field-check > span { color: #aaa; font-weight: 500; }
     .alterar-list-block { border: 1px solid #4a90e2; border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
     .alterar-list-header { background: #1e3a5f; color: #fff; padding: 10px 14px; display: flex; align-items: center; gap: 12px; font-weight: 700; }
-    .alterar-list-add { margin-left: auto; background: #4a90e2; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-weight: 600; }
+    .alterar-list-add { margin: 0 0 0 auto; background: #4a90e2; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-weight: 600; }
     .alterar-list-add:hover { background: #3a7bc8; }
     .alterar-list-body { padding: 12px 14px; background: #f8fafc; }
     .alterar-list-vazia { color: #888; font-style: italic; }
@@ -125,11 +126,11 @@
     .alterar-item-card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-weight: 700; color: #1e3a5f; }
     .alterar-item-card-header .item-key { font-family: monospace; font-weight: 600; color: #555; }
     .alterar-item-keep-label { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #333; }
-    .alterar-item-remove { margin-left: auto; background: #fdecea; color: #b71c1c; border: 1px solid #f5c6cb; border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 0.8rem; }
+    .alterar-item-remove { margin: 0 0 0 auto; background: #fdecea; color: #b71c1c; border: 1px solid #f5c6cb; border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 0.8rem; }
     .cnae-lista { display: flex; flex-direction: column; gap: 6px; flex-basis: 100%; margin-top: 6px; }
     .cnae-item { display: flex; align-items: center; gap: 8px; }
     .cnae-item input[type="text"] { min-width: 160px; }
-    .cnae-add { background: #4a90e2; color: #fff; border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer; align-self: flex-start; }
+    .cnae-add { margin: 0; background: #4a90e2; color: #fff; border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer; align-self: flex-start; }
 </style>
 <script>
 const MDM_SCHEMA = "{{ schema }}";
@@ -955,10 +956,12 @@ document.addEventListener("DOMContentLoaded", function () {
         var secPF = document.getElementById('mdm-section-inhabitant');
         var secPJ = document.getElementById('mdm-section-organization');
         var tipoBlock = document.querySelector('.tipo-cliente-block');
-        var presetsPj = document.getElementById('presets-pj');
         if (secPF) secPF.style.display = pj ? 'none' : '';
         if (secPJ) secPJ.style.display = pj ? '' : 'none';
-        if (presetsPj) presetsPj.style.display = pj ? 'flex' : 'none';
+        // Linhas de preset exclusivas de PJ (Isento de IE / Filial); a linha de UF fica sempre visível
+        document.querySelectorAll('.preset-row-pj').forEach(function (row) {
+            row.style.display = pj ? 'flex' : 'none';
+        });
 
         // Move a seção do tipo de cliente ativo para logo após a área de seleção PF/PJ
         var secAtiva = pj ? secPJ : secPF;
@@ -1004,8 +1007,9 @@ document.addEventListener("DOMContentLoaded", function () {
         r.addEventListener('change', aplicarIsentoIE);
     });
 
-    // Preset "UF (Estado)": preenche a UF do endereço e da Inscrição Estadual (PF e PJ).
-    // Só aplica em campos-select que tenham a UF como opção (o endereço não cobre AC).
+    // Preset "UF (Estado)": replica a escolha (Automatico ou uma UF) nos campos de UF
+    // do endereço e da Inscrição Estadual (PF e PJ). Só aplica em campos-select que
+    // tenham o valor como opção (o endereço não cobre AC).
     function aplicarPresetUF() {
         var uf = document.getElementById('preset-uf').value;
         ['val__addressProvince',
@@ -2292,19 +2296,18 @@ document.addEventListener('DOMContentLoaded', function () {
                 <input type="number" min="1" id="qtd_clientes" name="qtd_clientes" value="1">
             </div>
         </div>
-        <div class="block-header presets-pj presets-uf" id="presets-uf">
-            <div class="tipo-cliente-opcoes">
+        <div class="block-header presets-block" id="presets-block">
+            <div class="preset-row" id="preset-row-uf">
                 <span class="preset-label">UF (Estado)</span>
                 <select id="preset-uf" class="preset-uf-select">
+                    <option value="Automatico" selected>Automático</option>
                     {% for uf in ufs_ie %}
-                    <option value="{{ uf }}" {% if uf == 'SP' %}selected{% endif %}>{{ uf }}</option>
+                    <option value="{{ uf }}">{{ uf }}</option>
                     {% endfor %}
                 </select>
                 <span class="preset-uf-hint">preenche a UF do endereço e da Inscrição Estadual</span>
             </div>
-        </div>
-        <div class="block-header presets-pj" id="presets-pj" style="display:none;">
-            <div class="tipo-cliente-opcoes">
+            <div class="preset-row preset-row-pj" id="preset-row-isento" style="display:none;">
                 <span class="preset-label">Isento de Inscrição Estadual</span>
                 <label class="tipo-cliente-radio">
                     <input type="radio" name="preset_isento_ie" value="sim" id="preset-isento-ie-sim"> Sim
@@ -2313,7 +2316,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     <input type="radio" name="preset_isento_ie" value="nao" id="preset-isento-ie-nao" checked> Não
                 </label>
             </div>
-            <div class="tipo-cliente-opcoes">
+            <div class="preset-row preset-row-pj" id="preset-row-filial" style="display:none;">
                 <span class="preset-label">Filial</span>
                 <label class="tipo-cliente-radio">
                     <input type="radio" name="preset_filial" value="sim" id="preset-filial-sim"> Sim

@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
 **Data:** 17 de Julho de 2026  
-**Versão:** 2.17.1
+**Versão:** 2.17.3
 
 ---
 
@@ -18,6 +18,13 @@ A versão é definida em `version.py` e propagada automaticamente para o footer 
 ---
 
 ## 📋 Histórico de Versões
+
+### 2.17.3 — 17/07/2026
+- Aba MDM (Cadastrar): preset **UF (Estado)** passa a ter **Automático** como valor padrão (primeira opção do combobox). A escolha — Automático ou uma UF específica — é replicada nos campos de UF do endereço e da Inscrição Estadual (PF e PJ)
+
+### 2.17.2 — 17/07/2026
+- Aba MDM (Cadastrar): layout da seção de presets refeito — rótulos e radio buttons na mesma linha e alinhados em colunas (rótulo com largura fixa à esquerda, opções Sim/Não alinhadas entre as linhas); campo **UF (Estado)** movido para a primeira linha dos presets (acima de Isento de Inscrição Estadual) com combobox compacto (130px)
+- Corrigido o desalinhamento vertical do botão **Copiar** na lista de payloads: o `styles.css` global aplica `margin-top: 20px` em todo `button`, que não era zerado no botão Copiar (também zerado nos botões inline da aba Alterar: + Adicionar, Remover e + CNAE)
 
 ### 2.17.1 — 17/07/2026
 - Aba MDM (Alterar): corrige a geração de endereço novo, que gerava dados de uma UF aleatória mesmo com outra UF selecionada (CEP/rua/cidade incoerentes). Agora usa a mesma base real de CEPs do cadastro e sorteia um endereço válido de acordo com a UF (e o tipo de CEP) escolhidos no card; o payload só é gerado após a base de CEPs estar carregada
