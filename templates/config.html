@@ -122,10 +122,32 @@
             background: #f9fafc;
         }
         .api-bloco h5 {
-            margin: 0 0 8px 0;
+            margin: 0;
             color: #4a90e2;
             font-size: 0.92rem;
         }
+        .api-bloco-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .api-mover { display: flex; gap: 4px; }
+        .btn-mover {
+            background: #e8f0fe;
+            color: #4a90e2;
+            border: 1px solid #cdd4df;
+            border-radius: 4px;
+            width: 26px;
+            height: 26px;
+            font-size: 0.7rem;
+            line-height: 1;
+            cursor: pointer;
+            margin: 0;
+            padding: 0;
+        }
+        .btn-mover:hover:not(:disabled) { background: #c8dcf0; }
+        .btn-mover:disabled { opacity: 0.35; cursor: default; }
 
         .btn-danger {
             background: #e74c3c;
@@ -185,6 +207,7 @@
 
     <script>
         var config = {{ config_props | tojson | safe }};
+        var apisConfig = {{ apis | tojson | safe }};
 
         function atualizarVisibilidadeTunnel() {
             var algumTunnel = document.querySelector('input[type="radio"][value="tunnel"]:checked');
@@ -262,6 +285,24 @@
         }
 
         // ===== APIs =====
+        function escaparHtml(v) {
+            return String(v == null ? '' : v)
+                .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function carregarApis() {
+            const container = document.getElementById('apis-container');
+            container.innerHTML = '';
+            (apisConfig || []).forEach((api, idx) => {
+                const div = document.createElement('div');
+                div.className = 'api-bloco';
+                div.innerHTML = blocoApiHtml(idx, api);
+                container.appendChild(div);
+            });
+            reindexarApis();
+        }
+
         function adicionarApi() {
             const container = document.getElementById('apis-container');
             const idx = container.querySelectorAll('.api-bloco').length;
@@ -277,25 +318,58 @@
             reindexarApis();
         }
 
+        function moverApi(botao, dir) {
+            var bloco = botao.closest('.api-bloco');
+            if (dir < 0) {
+                var ant = bloco.previousElementSibling;
+                if (ant) bloco.parentNode.insertBefore(bloco, ant);
+            } else {
+                var prox = bloco.nextElementSibling;
+                if (prox) bloco.parentNode.insertBefore(prox, bloco);
+            }
+            reindexarApis();
+        }
+
         function reindexarApis() {
-            document.querySelectorAll('#apis-container .api-bloco').forEach((bloco, idx) => {
-                bloco.querySelectorAll('input, select').forEach(el => {
-                    el.name = el.name.replace(/_\d+$/, '_' + idx);
+            const blocos = document.querySelectorAll('#apis-container .api-bloco');
+            blocos.forEach((bloco, idx) => {
+                bloco.querySelectorAll('input, select, textarea').forEach(el => {
+                    if (el.name) el.name = el.name.replace(/_\d+$/, '_' + idx);
                 });
+                const titulo = bloco.querySelector('.api-bloco-titulo');
+                if (titulo) titulo.textContent = (idx + 1) + '. ' + (bloco.querySelector('input[name^="api_nome_"]').value || 'API');
+                const btUp = bloco.querySelector('.api-mover-up');
+                const btDown = bloco.querySelector('.api-mover-down');
+                if (btUp) btUp.disabled = (idx === 0);
+                if (btDown) btDown.disabled = (idx === blocos.length - 1);
             });
+        }
+
+        function alternarApikey(botao) {
+            const inp = botao.parentElement.querySelector('input');
+            if (inp.type === 'password') { inp.type = 'text'; botao.textContent = 'Ocultar'; }
+            else { inp.type = 'password'; botao.textContent = 'Mostrar'; }
         }
 
         function blocoApiHtml(idx, api) {
             const metodos = ['GET','POST','PUT','PATCH','DELETE'];
+            const metodoAtual = (api.method || 'GET').toUpperCase();
             const opcoesMetodo = metodos.map(m =>
-                `<option value="${m}" ${(api.method || 'POST') === m ? 'selected' : ''}>${m}</option>`
+                `<option value="${m}" ${metodoAtual === m ? 'selected' : ''}>${m}</option>`
             ).join('');
             return `
-                <h5>API ${idx + 1}</h5>
+                <div class="api-bloco-header">
+                    <h5 class="api-bloco-titulo">${idx + 1}. ${escaparHtml(api.nome) || 'API'}</h5>
+                    <div class="api-mover">
+                        <button type="button" class="btn-mover api-mover-up" title="Mover para cima" onclick="moverApi(this, -1)">&#9650;</button>
+                        <button type="button" class="btn-mover api-mover-down" title="Mover para baixo" onclick="moverApi(this, 1)">&#9660;</button>
+                    </div>
+                </div>
                 <div class="grid-2">
                     <div class="field-group">
-                        <label>Nome</label>
-                        <input type="text" name="api_nome_${idx}" value="${api.nome || ''}" placeholder="Ex: Minha_API" />
+                        <label>Nome da API</label>
+                        <input type="text" name="api_nome_${idx}" value="${escaparHtml(api.nome)}" placeholder="Ex: Consulta_MDM" oninput="reindexarApis()" />
+                        <small>Aparece no combobox da funcionalidade. Sem espaços.</small>
                     </div>
                     <div class="field-group">
                         <label>Método</label>
@@ -304,21 +378,31 @@
                 </div>
                 <div class="field-group">
                     <label>URL</label>
-                    <input type="text" name="api_url_${idx}" value="${api.url || ''}" placeholder="https://..." />
+                    <input type="text" name="api_url_${idx}" value="${escaparHtml(api.url)}" placeholder="https://..." />
                 </div>
                 <div class="field-group">
-                    <label>Parâmetros de URL</label>
-                    <input type="text" name="api_params_${idx}" value="${api.params || ''}" placeholder="Ex: /id=123" />
+                    <label>APIKEY</label>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <input type="password" name="api_apikey_${idx}" value="${escaparHtml(api.apikey)}" placeholder="Chave de acesso" autocomplete="off" />
+                        <button type="button" class="btn-secondary" style="padding:8px 12px;white-space:nowrap" onclick="alternarApikey(this)">Mostrar</button>
+                    </div>
+                    <small>Enviada no header <code>Apikey</code>. Salva em <code>secure.properties</code>.</small>
                 </div>
                 <div class="grid-2">
                     <div class="field-group">
-                        <label>Header</label>
-                        <input type="text" name="api_header_${idx}" value="${api.header || ''}" placeholder="Chave=Valor; Chave2=Valor2" />
+                        <label>Parâmetro</label>
+                        <input type="text" name="api_params_${idx}" value="${escaparHtml(api.params)}" placeholder="Ex: /22670075843" />
+                        <small>Valor padrão anexado à URL (editável na funcionalidade).</small>
                     </div>
                     <div class="field-group">
-                        <label>Token</label>
-                        <input type="text" name="api_token_${idx}" value="${api.token || ''}" />
+                        <label>Dica de parâmetro</label>
+                        <input type="text" name="api_param_hint_${idx}" value="${escaparHtml(api.param_hint)}" placeholder="Ex: Informe o GTIN do produto" />
+                        <small>Exibida como dica dentro do campo Parâmetro.</small>
                     </div>
+                </div>
+                <div class="field-group">
+                    <label>Body padrão</label>
+                    <textarea name="api_body_${idx}" rows="4" placeholder="Corpo padrão (JSON, XML...). Ignorado em métodos GET.">${escaparHtml(api.body)}</textarea>
                 </div>
                 <button type="button" class="btn-danger" onclick="removerApi(this)">Remover API</button>
             `;
@@ -328,6 +412,7 @@
 
         document.addEventListener('DOMContentLoaded', function() {
             carregarConsultas();
+            carregarApis();
             document.querySelector('.cfg-tab').click();
 
             // Após salvar, notifica o pai para recarregar a interface
@@ -345,6 +430,7 @@
         <!-- Navegação interna -->
         <div class="cfg-nav">
             <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-geral')">Geral</button>
+            <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-apis')">Requisição API</button>
             <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-oracle')">Oracle — Consultas SQL</button>
         </div>
 
@@ -540,6 +626,16 @@
             </div>
 
         </div><!-- /sec-geral -->
+
+        <!-- ======== SEÇÃO: REQUISIÇÃO API ======== -->
+        <div id="sec-apis" class="cfg-section">
+            <div class="card">
+                <h4>APIs cadastradas</h4>
+                <small>APIs disponíveis no combobox da funcionalidade <strong>Requisição API</strong>. Use as setas &#9650;/&#9660; para definir a <strong>ordem de exibição</strong> no combobox. A APIKEY é exibida mascarada e armazenada em <code>secure.properties</code>.</small>
+                <div id="apis-container" style="margin-top:14px"></div>
+                <button type="button" class="btn-add" onclick="adicionarApi()">+ Adicionar API</button>
+            </div>
+        </div><!-- /sec-apis -->
 
         <!-- ======== SEÇÃO: ORACLE ======== -->
         <div id="sec-oracle" class="cfg-section">

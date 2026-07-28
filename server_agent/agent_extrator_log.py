@@ -1,5 +1,6 @@
 import imaplib, email, smtplib
 import os, time, csv, zipfile, re, logging, ctypes, ctypes.wintypes, threading
+import winreg
 try:
     import urllib.request as _urllib_req
     import urllib.error as _urllib_err
@@ -27,25 +28,73 @@ LOG_DIR     = os.path.join(BASE_DIR, 'log')
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
+# Impressora: helpers que leem hashes do agent.properties (props)
+def _imp_virtual_hash(props):
+    return props.get('impressora.virtual.hash', '')
+
+def _imp_fisica_portas(props):
+    return {k[len('impressora.fisica.'):].upper(): v
+            for k, v in props.items() if k.startswith('impressora.fisica.')}
+
+# ---------------------------------------------------------------------------
 # Logging diário
 # ---------------------------------------------------------------------------
+# O dia corrente é sempre gravado no arquivo fixo agente_extrator.log. Na virada
+# do dia (ou no primeiro log após reinício em outra data), o arquivo fixo é
+# renomeado para agente_extrator_<data-anterior>.log e um novo arquivo fixo é
+# iniciado para o dia atual.
+LOG_FILE_BASE = 'agente_extrator'
+LOG_FILE      = os.path.join(LOG_DIR, f'{LOG_FILE_BASE}.log')
+
 _log_date = None
 _logger = logging.getLogger('agente')
 _logger.setLevel(logging.INFO)
+
+def _arquivar_log_anterior(data_anterior):
+    """Renomeia o log fixo para agente_extrator_<data_anterior>.log.
+    Se já existir arquivo para essa data (ex.: reinícios no mesmo dia), anexa o
+    conteúdo em vez de sobrescrever."""
+    if not os.path.exists(LOG_FILE):
+        return
+    destino = os.path.join(LOG_DIR, f'{LOG_FILE_BASE}_{data_anterior}.log')
+    try:
+        if os.path.exists(destino):
+            with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as src, \
+                 open(destino, 'a', encoding='utf-8') as dst:
+                dst.write(src.read())
+            os.remove(LOG_FILE)
+        else:
+            os.replace(LOG_FILE, destino)
+    except Exception as e:
+        print(f'[LOG] Falha ao arquivar log anterior ({data_anterior}): {e}')
 
 def _atualizar_handler():
     global _log_date
     hoje = datetime.now().strftime('%Y-%m-%d')
     if _log_date == hoje:
         return
-    _log_date = hoje
+
+    # Fecha o handler atual para liberar o arquivo antes de renomear
     for h in _logger.handlers[:]:
         h.close()
         _logger.removeHandler(h)
-    handler = logging.FileHandler(
-        os.path.join(LOG_DIR, f'operacao_{hoje}.log'),
-        encoding='utf-8'
-    )
+
+    # Descobre a que dia pertencem as informações já gravadas no log fixo:
+    # em rollover no mesmo processo é o _log_date; num reinício é a data de
+    # modificação do arquivo fixo existente.
+    if _log_date is not None:
+        data_anterior = _log_date
+    elif os.path.exists(LOG_FILE):
+        data_anterior = datetime.fromtimestamp(
+            os.path.getmtime(LOG_FILE)).strftime('%Y-%m-%d')
+    else:
+        data_anterior = None
+
+    if data_anterior and data_anterior != hoje:
+        _arquivar_log_anterior(data_anterior)
+
+    _log_date = hoje
+    handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
     handler.setFormatter(logging.Formatter(
         '%(asctime)s [%(levelname)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
@@ -474,20 +523,23 @@ def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
 # Funcionalidade 2: Parametrização PDV
 # ---------------------------------------------------------------------------
 def alterar_constante_properties(caminho_arquivo, constante, novo_valor):
-    """Localiza a linha com 'constante=...' e substitui o valor."""
+    """Localiza a linha com 'constante=...' (ativa ou comentada com #) e substitui o valor,
+    descomentando se necessário."""
     if not os.path.exists(caminho_arquivo):
         raise FileNotFoundError(f'Arquivo não encontrado: {caminho_arquivo}')
 
     with open(caminho_arquivo, 'r', encoding='utf-8', errors='replace') as f:
         linhas = f.readlines()
 
-    padrao = re.compile(rf'^(\s*{re.escape(constante)}\s*=\s*)(.*)$')
+    # Bate com linha ativa OU comentada: (#)constante=valor
+    padrao = re.compile(rf'^(\s*)#?(\s*{re.escape(constante)}\s*=\s*)(.*)$')
     alterado = False
     novas_linhas = []
     for linha in linhas:
         m = padrao.match(linha)
         if m:
-            novas_linhas.append(f'{m.group(1)}{novo_valor}\n')
+            # reconstrói sem o # (descomenta) e com o novo valor
+            novas_linhas.append(f'{m.group(1)}{m.group(2)}{novo_valor}\n')
             alterado = True
         else:
             novas_linhas.append(linha)
@@ -498,12 +550,131 @@ def alterar_constante_properties(caminho_arquivo, constante, novo_valor):
     with open(caminho_arquivo, 'w', encoding='utf-8') as f:
         f.writelines(novas_linhas)
 
+def comentar_constante_properties(caminho_arquivo, constante):
+    """Comenta a linha com 'constante=...' prefixando com '#'. Ignora se já comentada ou ausente."""
+    if not os.path.exists(caminho_arquivo):
+        raise FileNotFoundError(f'Arquivo não encontrado: {caminho_arquivo}')
+    with open(caminho_arquivo, 'r', encoding='utf-8', errors='replace') as f:
+        linhas = f.readlines()
+    padrao = re.compile(rf'^(\s*)({re.escape(constante)}\s*=.*)$')
+    novas_linhas = []
+    for linha in linhas:
+        m = padrao.match(linha)
+        if m:
+            novas_linhas.append(f'{m.group(1)}#{m.group(2)}\n')
+        else:
+            novas_linhas.append(linha)
+    with open(caminho_arquivo, 'w', encoding='utf-8') as f:
+        f.writelines(novas_linhas)
+
 def sobrescrever_arquivo(caminho_arquivo, novo_valor):
     """Remove todo o conteúdo do arquivo e escreve apenas o novo valor."""
     if not os.path.exists(caminho_arquivo):
         raise FileNotFoundError(f'Arquivo não encontrado: {caminho_arquivo}')
     with open(caminho_arquivo, 'w', encoding='utf-8') as f:
         f.write(novo_valor + '\n')
+
+def _descobrir_porta_bematech(ip):
+    """Descobre a porta COM da impressora Bematech MP-4200 TH no PDV remoto via registro remoto.
+    Retorna string como 'COM3' ou None se não encontrar."""
+    def _eh_bematech(s):
+        s = s.lower()
+        return 'bematech' in s or 'mp-4200' in s or 'mp4200' in s
+
+    def _extrair_com(desc):
+        m = re.search(r'\(COM(\d+)\)', desc, re.IGNORECASE)
+        return f'COM{m.group(1)}' if m else None
+
+    try:
+        conn = winreg.ConnectRegistry(ip, winreg.HKEY_LOCAL_MACHINE)
+
+        # ── Abordagem 1: classe serial – lê PortName direto ou via Device Parameters ──
+        SERIAL_CLASS = r'SYSTEM\CurrentControlSet\Control\Class\{4D36E978-E325-11CE-BFC1-08002BE10318}'
+        try:
+            base = winreg.OpenKey(conn, SERIAL_CLASS)
+            idx = 0
+            while True:
+                try:
+                    sub_name = winreg.EnumKey(base, idx); idx += 1
+                    if sub_name == 'Properties':
+                        continue
+                    try:
+                        sub = winreg.OpenKey(base, sub_name)
+                        for val_name in ('FriendlyName', 'DriverDesc'):
+                            try:
+                                desc, _ = winreg.QueryValueEx(sub, val_name)
+                                log(f'[Impressora] classe/{sub_name} {val_name}={desc}')
+                                if _eh_bematech(desc):
+                                    p = _extrair_com(desc)
+                                    if p:
+                                        return p
+                                    for loc_key in (sub,):
+                                        for pn_loc in (loc_key, None):
+                                            try:
+                                                key = (winreg.OpenKey(loc_key, 'Device Parameters')
+                                                       if pn_loc is None else loc_key)
+                                                porta, _ = winreg.QueryValueEx(key, 'PortName')
+                                                log(f'[Impressora] PortName={porta}')
+                                                return porta.strip()
+                                            except OSError:
+                                                pass
+                            except FileNotFoundError:
+                                pass
+                    except OSError:
+                        pass
+                except OSError:
+                    break
+        except OSError:
+            pass
+
+        # ── Abordagem 2: árvore ENUM – FriendlyName contém "(COMx)" ──────────────
+        log(f'[Impressora] Classe serial sem PortName; buscando na árvore ENUM de {ip}')
+        try:
+            enum = winreg.OpenKey(conn, r'SYSTEM\CurrentControlSet\Enum')
+            n_bus = winreg.QueryInfoKey(enum)[0]
+            for bi in range(n_bus):
+                try:
+                    bus_name = winreg.EnumKey(enum, bi)
+                    bus_key  = winreg.OpenKey(enum, bus_name)
+                    for di in range(winreg.QueryInfoKey(bus_key)[0]):
+                        try:
+                            dev_name = winreg.EnumKey(bus_key, di)
+                            dev_key  = winreg.OpenKey(bus_key, dev_name)
+                            for ii in range(winreg.QueryInfoKey(dev_key)[0]):
+                                try:
+                                    inst_name = winreg.EnumKey(dev_key, ii)
+                                    inst_key  = winreg.OpenKey(dev_key, inst_name)
+                                    for fn_key in ('FriendlyName', 'DeviceDesc'):
+                                        try:
+                                            fn, _ = winreg.QueryValueEx(inst_key, fn_key)
+                                            if _eh_bematech(fn):
+                                                log(f'[Impressora] ENUM {bus_name}\\{dev_name} {fn_key}={fn}')
+                                                p = _extrair_com(fn)
+                                                if p:
+                                                    return p
+                                                try:
+                                                    dp = winreg.OpenKey(inst_key, 'Device Parameters')
+                                                    porta, _ = winreg.QueryValueEx(dp, 'PortName')
+                                                    log(f'[Impressora] PortName={porta}')
+                                                    return porta.strip()
+                                                except OSError:
+                                                    pass
+                                        except FileNotFoundError:
+                                            pass
+                                except OSError:
+                                    pass
+                        except OSError:
+                            pass
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+        log(f'[Impressora] Bematech não encontrada no registro de {ip}', 'warning')
+    except Exception as e:
+        log(f'[Impressora] Erro ao acessar registro remoto de {ip}: {e}', 'error')
+    return None
+
 
 def _processar_parametrizacao_pdv(pid, loja, pdv, base_pdv, lista_params, props, email_user, email_pass, destino):
     """Processa parametrização para um único PDV e envia e-mail de resultado."""
@@ -525,6 +696,82 @@ def _processar_parametrizacao_pdv(pid, loja, pdv, base_pdv, lista_params, props,
     resultados = []
 
     for param in lista_params:
+
+        # ── Impressora Virtual ──────────────────────────────────────────────
+        if param == 'impressora_virtual':
+            status_param = 'Sucesso'
+            erro_param   = ''
+            arq_periferico = 'p2k\\bin\\parametrosGeraisPerifericos.properties'
+            arq_geral      = 'p2k\\bin\\parametrosGeraisPDV.properties'
+            try:
+                loja_sem_zeros = loja.lstrip('0') or '0'
+                token = int(loja_sem_zeros + pdv) * 8963
+                log(f'[Impressora Virtual] Loja={loja_sem_zeros} PDV={pdv} token={token}')
+
+                if base_pdv:
+                    path_per = os.path.join(f'\\\\{base_pdv}\\C$', arq_periferico)
+                    path_ger = os.path.join(f'\\\\{base_pdv}\\C$', arq_geral)
+                else:
+                    path_per = arq_periferico
+                    path_ger = arq_geral
+
+                alterar_constante_properties(path_per, 'IMPRESSORA_PRINCIPAL', _imp_virtual_hash(props))
+                alterar_constante_properties(path_ger, 'TOKEN_HABILITA_IMP_NAO_FISCAL_VIRTUAL', str(token))
+                alterar_constante_properties(path_ger, 'VALIDA_PAPEL_INICIO_VENDA', 'false')
+
+                log(f'[OK] impressora_virtual: IMPRESSORA_PRINCIPAL, TOKEN e VALIDA_PAPEL configurados')
+                resultados.append({'param': 'impressora_virtual', 'constante': 'IMPRESSORA_PRINCIPAL / TOKEN / VALIDA_PAPEL',
+                                   'arquivo': arq_periferico, 'esperado': f'token={token}', 'atual': f'token={token}',
+                                   'status': 'OK', 'erro': ''})
+            except Exception as e:
+                erro_param   = str(e)
+                status_param = 'Erro'
+                log(f'Erro impressora_virtual: {erro_param}', 'error')
+                resultados.append({'param': 'impressora_virtual', 'constante': '', 'arquivo': arq_periferico,
+                                   'esperado': '', 'atual': '', 'status': 'ERRO', 'erro': erro_param})
+            gravar_csv_param([pid, loja, pdv, param, arq_periferico, 'IMPRESSORA_PRINCIPAL',
+                              'virtual', datetime.now().isoformat(), status_param, erro_param])
+            continue
+
+        # ── Impressora Física ───────────────────────────────────────────────
+        if param == 'impressora_fisica':
+            status_param = 'Sucesso'
+            erro_param   = ''
+            arq_periferico = 'p2k\\bin\\parametrosGeraisPerifericos.properties'
+            arq_geral      = 'p2k\\bin\\parametrosGeraisPDV.properties'
+            try:
+                porta = _descobrir_porta_bematech(base_pdv) if base_pdv else None
+                if not porta:
+                    raise RuntimeError('Impressora Bematech MP-4200 TH não encontrada no PDV remoto')
+                hash_porta = _imp_fisica_portas(props).get(porta.upper())
+                if not hash_porta:
+                    raise RuntimeError(f'Porta {porta} não configurada em agent.properties (impressora.fisica.{porta})')
+
+                if base_pdv:
+                    path_per = os.path.join(f'\\\\{base_pdv}\\C$', arq_periferico)
+                    path_ger = os.path.join(f'\\\\{base_pdv}\\C$', arq_geral)
+                else:
+                    path_per = arq_periferico
+                    path_ger = arq_geral
+
+                alterar_constante_properties(path_per, 'IMPRESSORA_PRINCIPAL', hash_porta)
+                alterar_constante_properties(path_ger, 'VALIDA_PAPEL_INICIO_VENDA', 'true')
+                comentar_constante_properties(path_ger, 'TOKEN_HABILITA_IMP_NAO_FISCAL_VIRTUAL')
+                log(f'[OK] impressora_fisica: porta={porta} | IMPRESSORA_PRINCIPAL, VALIDA_PAPEL=true, TOKEN comentado')
+                resultados.append({'param': 'impressora_fisica', 'constante': 'IMPRESSORA_PRINCIPAL / VALIDA_PAPEL / TOKEN',
+                                   'arquivo': arq_periferico, 'esperado': porta, 'atual': porta,
+                                   'status': 'OK', 'erro': ''})
+            except Exception as e:
+                erro_param   = str(e)
+                status_param = 'Erro'
+                log(f'Erro impressora_fisica: {erro_param}', 'error')
+                resultados.append({'param': 'impressora_fisica', 'constante': '', 'arquivo': arq_periferico,
+                                   'esperado': '', 'atual': '', 'status': 'ERRO', 'erro': erro_param})
+            gravar_csv_param([pid, loja, pdv, param, arq_periferico, 'IMPRESSORA_PRINCIPAL',
+                              'fisica', datetime.now().isoformat(), status_param, erro_param])
+            continue
+
+        # ── Parâmetros genéricos (agent.properties) ─────────────────────────
         caminho_relativo = props.get(f'{param}.arquivo')
         constante        = props.get(f'{param}.constante')
         novo_valor       = props.get(f'{param}.valor')
@@ -757,209 +1004,165 @@ def ler_valor_constante(caminho_arquivo, constante):
 def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, email_pass):
     pid     = extrair_campo(corpo, 'PID')
     destino = extrair_campo(corpo, 'Destino')
-    loja    = extrair_campo(corpo, 'Loja')
-    pdv     = extrair_campo(corpo, 'PDV')
+    selecao = extrair_campo(corpo, 'Selecao')
 
-    log(f'[VerificarParametrizacao] PID={pid} | Loja={loja} | PDV={pdv} | Destino={destino}')
+    log(f'[VerificarParametrizacao] PID={pid} | Destino={destino} | Selecao={selecao}')
 
-    base_pdv      = props.get(f'PDV_{pdv}', '')
+    if not selecao:
+        log('Campo Selecao ausente no e-mail de verificação.', 'error')
+        imap.store(num, '+FLAGS', '\\Seen')
+        return
+
     windows_user  = props.get('windows_user', '')
     windows_senha = props.get('windows_senha', '')
+    agora         = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
 
-    if not base_pdv:
-        log(f'Aviso: IP não configurado para PDV {pdv}', 'warning')
-    else:
-        try:
-            autenticar_unc(base_pdv, windows_user, windows_senha)
-        except PermissionError as e:
-            log(str(e), 'error')
+    grupos = _parsear_selecao(selecao, props)
 
-    # Descobre todos os parâmetros configurados no agent.properties (chaves com .arquivo)
-    params = sorted({k[:-8] for k in props if k.endswith('.arquivo')})
+    COR = {'OK': '#1a7f4b', 'DIVERGENTE': '#b45309', 'ERRO': '#b91c1c'}
+    BG  = {'OK': '#dcfce7', 'DIVERGENTE': '#fef3c7', 'ERRO': '#fee2e2'}
+    ICO = {'OK': '✔', 'DIVERGENTE': '⚠', 'ERRO': '✖'}
 
-    # Cada item: dict com status, param, constante, arquivo, esperado, atual, erro
-    resultados = []
+    def truncar(valor, limite=45):
+        if not valor:
+            return '—', ''
+        if len(valor) <= limite:
+            return valor, valor
+        return valor[:limite] + '…', valor
 
-    for param in params:
-        caminho_relativo = props.get(f'{param}.arquivo', '')
-        constante        = props.get(f'{param}.constante', '')
-        valor_esperado   = props.get(f'{param}.valor', '')
-        eh_dat           = not constante
+    total_ok = total_div = total_erro = 0
+    secoes_html = ''
+    secoes_txt  = ''
 
-        if base_pdv:
-            caminho_absoluto = os.path.join(f'\\\\{base_pdv}\\C$', caminho_relativo.strip(':\\'))
-        else:
-            caminho_absoluto = caminho_relativo
+    for loja, pdvs in grupos.items():
+        secoes_html += f"""
+        <tr><td colspan='4' style='padding:14px 28px 6px;background:#f8fafc;
+            border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb'>
+          <span style='font-size:12px;font-weight:bold;color:#1e3a5f;text-transform:uppercase;
+                       letter-spacing:.5px'>Loja {loja}</span>
+        </td></tr>"""
+        secoes_txt += f'\n\n=== Loja {loja} ==='
 
-        log(f'Verificando: {param} | arquivo={caminho_absoluto}')
-
-        r = {'param': param, 'constante': constante, 'arquivo': caminho_relativo,
-             'esperado': valor_esperado, 'atual': '', 'status': 'ERRO', 'erro': ''}
-
-        try:
-            if not os.path.exists(caminho_absoluto):
-                r['erro'] = f'Arquivo não encontrado: {caminho_absoluto}'
-            elif eh_dat:
-                with open(caminho_absoluto, 'r', encoding='utf-8', errors='replace') as f:
-                    r['atual'] = f.read().strip()
-                r['status'] = 'OK' if r['atual'] == valor_esperado.strip() else 'DIVERGENTE'
+        for pdv in pdvs:
+            base_pdv = props.get(f'PDV_{pdv}', '')
+            if not base_pdv:
+                log(f'Aviso: IP não configurado para PDV {pdv}', 'warning')
             else:
-                valor_atual = ler_valor_constante(caminho_absoluto, constante)
-                if valor_atual is None:
-                    r['erro'] = f'Constante "{constante}" não encontrada no arquivo'
-                else:
-                    r['atual']  = valor_atual
-                    r['status'] = 'OK' if valor_atual == valor_esperado.strip() else 'DIVERGENTE'
-        except Exception as e:
-            r['erro'] = str(e)
+                try:
+                    autenticar_unc(base_pdv, windows_user, windows_senha)
+                except PermissionError as e:
+                    log(str(e), 'error')
 
-        if r['status'] == 'ERRO':
-            log(f'Erro ao verificar {param}: {r["erro"]}', 'error')
-        resultados.append(r)
+            resultados = _verificar_pdv_params(base_pdv, props)
+            resultados.append(_verificar_impressora_pdv(base_pdv, loja, pdv, props))
 
-    if destino:
-        n_ok   = sum(1 for r in resultados if r['status'] == 'OK')
-        n_div  = sum(1 for r in resultados if r['status'] == 'DIVERGENTE')
-        n_erro = sum(1 for r in resultados if r['status'] == 'ERRO')
-        agora  = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+            n_ok  = sum(1 for r in resultados if r['status'] == 'OK')
+            n_div = sum(1 for r in resultados if r['status'] == 'DIVERGENTE')
+            n_err = sum(1 for r in resultados if r['status'] == 'ERRO')
+            total_ok += n_ok; total_div += n_div; total_erro += n_err
 
-        # ---- cores e ícones por status ----
-        COR = {'OK': '#1a7f4b', 'DIVERGENTE': '#b45309', 'ERRO': '#b91c1c'}
-        BG  = {'OK': '#dcfce7', 'DIVERGENTE': '#fef3c7', 'ERRO': '#fee2e2'}
-        ICO = {'OK': '✔', 'DIVERGENTE': '⚠', 'ERRO': '✖'}
-
-        def truncar(valor, limite=45):
-            """Trunca texto longo para exibição; valor completo fica no title (tooltip)."""
-            if not valor:
-                return '—', ''
-            if len(valor) <= limite:
-                return valor, valor
-            return valor[:limite] + '…', valor
-
-        # ---- linhas da tabela ----
-        linhas_html = ''
-        linhas_txt  = ''
-        for r in resultados:
-            st  = r['status']
-            cor = COR[st]; bg = BG[st]; ico = ICO[st]
-            # Coluna Parâmetro: mostra só a constante quando existe; caso contrário (ex: .dat) usa o nome do param
-            nome_exibido = r['constante'] if r['constante'] else r['param']
-
-            esp_curto, esp_full = truncar(r['esperado'])
-            if r['erro'] and not r['atual']:
-                atu_curto, atu_full = truncar(r['erro'])
-                atu_cor = '#b91c1c'
-            else:
-                atu_curto, atu_full = truncar(r['atual'])
-                atu_cor = '#374151'
-
-            cel_style = "padding:10px 14px;border-bottom:1px solid #e5e7eb;font-size:12px;max-width:160px"
-
-            linhas_html += f"""
-            <tr>
-              <td style='{cel_style}'>
-                <span style='font-family:monospace;font-size:12px;color:#1e293b'>{nome_exibido}</span>
-              </td>
-              <td style='{cel_style};color:#374151' title='{esp_full}'>
-                <span style='white-space:nowrap;overflow:hidden;display:block;max-width:150px;text-overflow:ellipsis'>{esp_curto}</span>
-              </td>
-              <td style='{cel_style};color:{atu_cor}' title='{atu_full}'>
-                <span style='white-space:nowrap;overflow:hidden;display:block;max-width:150px;text-overflow:ellipsis'>{atu_curto}</span>
-              </td>
-              <td style='padding:10px 14px;border-bottom:1px solid #e5e7eb;text-align:center;white-space:nowrap'>
-                <span style='background:{bg};color:{cor};font-weight:bold;font-size:11px;
-                             padding:3px 10px;border-radius:12px;display:inline-block'>
-                  {ico} {st}
-                </span>
-              </td>
-            </tr>"""
-
-            linhas_txt += (
-                f"\n[{st}] {nome_exibido}"
-                + f"\n  Esperado: {r['esperado']}"
-                + f"\n  Atual   : {r['atual'] or r['erro']}\n"
+            resumo_badges = (
+                f"<span style='background:#dcfce7;color:#1a7f4b;font-size:10px;font-weight:bold;"
+                f"padding:2px 8px;border-radius:10px;margin-right:4px'>{n_ok} OK</span>"
+                f"<span style='background:#fef3c7;color:#b45309;font-size:10px;font-weight:bold;"
+                f"padding:2px 8px;border-radius:10px;margin-right:4px'>{n_div} DIV</span>"
+                f"<span style='background:#fee2e2;color:#b91c1c;font-size:10px;font-weight:bold;"
+                f"padding:2px 8px;border-radius:10px'>{n_err} ERRO</span>"
             )
 
+            secoes_html += f"""
+        <tr><td colspan='4' style='padding:8px 28px 4px'>
+          <span style='font-size:11px;font-weight:bold;color:#374151'>PDV {pdv}</span>
+          &nbsp;&nbsp;{resumo_badges}
+        </td></tr>"""
+            secoes_txt += f'\n  --- PDV {pdv} ---'
+
+            linhas_html = ''
+            for r in resultados:
+                st  = r['status']
+                cor = COR[st]; bg = BG[st]; ico = ICO[st]
+                nome_exibido = r['constante'] if r.get('constante') else r['param']
+                esp_curto, esp_full = truncar(r.get('esperado', ''))
+                if r.get('erro') and not r.get('atual'):
+                    atu_curto, atu_full = truncar(r['erro'])
+                    atu_cor = '#b91c1c'
+                else:
+                    atu_curto, atu_full = truncar(r.get('atual', ''))
+                    atu_cor = '#374151'
+                cel = "padding:8px 14px;border-bottom:1px solid #e5e7eb;font-size:11px;max-width:150px"
+                linhas_html += f"""
+            <tr>
+              <td style='{cel}'><span style='font-family:monospace;color:#1e293b'>{nome_exibido}</span></td>
+              <td style='{cel};color:#374151' title='{esp_full}'>
+                <span style='white-space:nowrap;overflow:hidden;display:block;max-width:140px;text-overflow:ellipsis'>{esp_curto}</span>
+              </td>
+              <td style='{cel};color:{atu_cor}' title='{atu_full}'>
+                <span style='white-space:nowrap;overflow:hidden;display:block;max-width:140px;text-overflow:ellipsis'>{atu_curto}</span>
+              </td>
+              <td style='padding:8px 14px;border-bottom:1px solid #e5e7eb;text-align:center;white-space:nowrap'>
+                <span style='background:{bg};color:{cor};font-weight:bold;font-size:10px;
+                             padding:2px 8px;border-radius:10px;display:inline-block'>{ico} {st}</span>
+              </td>
+            </tr>"""
+                secoes_txt += (
+                    f"\n  [{st}] {nome_exibido}"
+                    f"\n    Esperado: {r.get('esperado', '')}"
+                    f"\n    Atual   : {r.get('atual', '') or r.get('erro', '')}\n"
+                )
+
+            secoes_html += f"""
+        <tr><td colspan='4' style='padding:0 28px 12px'>
+          <table width='100%' cellpadding='0' cellspacing='0'
+                 style='border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;font-size:12px'>
+            <thead><tr style='background:#f8fafc'>
+              <th style='padding:8px 14px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Parâmetro</th>
+              <th style='padding:8px 14px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Esperado</th>
+              <th style='padding:8px 14px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Atual</th>
+              <th style='padding:8px 14px;text-align:center;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Status</th>
+            </tr></thead>
+            <tbody>{linhas_html}</tbody>
+          </table>
+        </td></tr>"""
+
+    if destino:
         corpo_html = f"""<!DOCTYPE html>
 <html><head><meta charset='utf-8'></head>
 <body style='margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif'>
 <table width='100%' cellpadding='0' cellspacing='0' style='background:#f3f4f6;padding:24px 0'>
 <tr><td align='center'>
-<table width='640' cellpadding='0' cellspacing='0' style='background:#ffffff;border-radius:8px;
+<table width='700' cellpadding='0' cellspacing='0' style='background:#ffffff;border-radius:8px;
        overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)'>
 
-  <!-- Cabeçalho -->
   <tr><td style='background:#1e3a5f;padding:24px 28px'>
     <p style='margin:0;color:#93c5fd;font-size:12px;text-transform:uppercase;letter-spacing:1px'>Backoffice Equipe QA</p>
     <h1 style='margin:6px 0 0;color:#ffffff;font-size:20px'>Verificar Parametrização</h1>
+    <p style='margin:6px 0 0;color:#bfdbfe;font-size:12px;font-family:monospace'>PID: {pid}</p>
   </td></tr>
 
-  <!-- Informações do PDV -->
-  <tr><td style='padding:20px 28px 0'>
-    <table cellpadding='0' cellspacing='0' width='100%'>
-      <tr>
-        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:30%'>
-          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>Loja</p>
-          <p style='margin:4px 0 0;font-size:18px;font-weight:bold;color:#1e3a5f'>{loja}</p>
-        </td>
-        <td width='12'></td>
-        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:30%'>
-          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>PDV</p>
-          <p style='margin:4px 0 0;font-size:18px;font-weight:bold;color:#1e3a5f'>{pdv}</p>
-        </td>
-        <td width='12'></td>
-        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:38%'>
-          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>PID</p>
-          <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:#1e3a5f;font-family:monospace'>{pid}</p>
-        </td>
-      </tr>
-    </table>
-  </td></tr>
-
-  <!-- Resumo -->
   <tr><td style='padding:16px 28px'>
     <table cellpadding='0' cellspacing='0' width='100%'>
       <tr>
         <td style='background:#dcfce7;border-radius:6px;padding:10px;text-align:center;width:32%'>
-          <p style='margin:0;font-size:22px;font-weight:bold;color:#1a7f4b'>{n_ok}</p>
+          <p style='margin:0;font-size:22px;font-weight:bold;color:#1a7f4b'>{total_ok}</p>
           <p style='margin:2px 0 0;font-size:11px;color:#1a7f4b;font-weight:bold'>OK</p>
         </td>
         <td width='10'></td>
         <td style='background:#fef3c7;border-radius:6px;padding:10px;text-align:center;width:32%'>
-          <p style='margin:0;font-size:22px;font-weight:bold;color:#b45309'>{n_div}</p>
+          <p style='margin:0;font-size:22px;font-weight:bold;color:#b45309'>{total_div}</p>
           <p style='margin:2px 0 0;font-size:11px;color:#b45309;font-weight:bold'>DIVERGENTE</p>
         </td>
         <td width='10'></td>
         <td style='background:#fee2e2;border-radius:6px;padding:10px;text-align:center;width:32%'>
-          <p style='margin:0;font-size:22px;font-weight:bold;color:#b91c1c'>{n_erro}</p>
+          <p style='margin:0;font-size:22px;font-weight:bold;color:#b91c1c'>{total_erro}</p>
           <p style='margin:2px 0 0;font-size:11px;color:#b91c1c;font-weight:bold'>ERRO</p>
         </td>
       </tr>
     </table>
   </td></tr>
 
-  <!-- Tabela de resultados -->
-  <tr><td style='padding:0 28px 24px'>
-    <table width='100%' cellpadding='0' cellspacing='0'
-           style='border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;font-size:13px'>
-      <thead>
-        <tr style='background:#f8fafc'>
-          <th style='padding:10px 14px;text-align:left;color:#6b7280;font-size:11px;
-                     text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Parâmetro</th>
-          <th style='padding:10px 14px;text-align:left;color:#6b7280;font-size:11px;
-                     text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Esperado</th>
-          <th style='padding:10px 14px;text-align:left;color:#6b7280;font-size:11px;
-                     text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Atual</th>
-          <th style='padding:10px 14px;text-align:center;color:#6b7280;font-size:11px;
-                     text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Status</th>
-        </tr>
-      </thead>
-      <tbody>{linhas_html}
-      </tbody>
-    </table>
-  </td></tr>
+  <table width='700' cellpadding='0' cellspacing='0'>{secoes_html}
+  </table>
 
-  <!-- Rodapé -->
   <tr><td style='padding:14px 28px;background:#f8fafc;border-top:1px solid #e5e7eb'>
     <p style='margin:0;font-size:11px;color:#9ca3af'>Gerado em {agora} &nbsp;|&nbsp; Agent Extrator Log</p>
   </td></tr>
@@ -970,16 +1173,15 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
 </body></html>"""
 
         corpo_txt = (
-            f"Verificar Parametrização\n"
-            f"PID: {pid} | Loja: {loja} | PDV: {pdv}\n"
-            f"Resumo: {n_ok} OK | {n_div} DIVERGENTE | {n_erro} ERRO\n"
+            f"Verificar Parametrização | PID: {pid}\n"
+            f"Resumo: {total_ok} OK | {total_div} DIVERGENTE | {total_erro} ERRO\n"
             f"{'=' * 60}"
-            + linhas_txt
+            + secoes_txt
         )
 
         try:
             enviar_email_html(email_user, email_pass, destino,
-                              f'[Verificar Parametrização][{loja}][{pdv}][{pid}]',
+                              f'[Verificar Parametrização][{pid}]',
                               corpo_html, corpo_txt)
             log(f'Resposta de verificação enviada para {destino}')
         except Exception as e:
@@ -990,6 +1192,65 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
 # ---------------------------------------------------------------------------
 # Funcionalidade 4: Relatório Parametrização
 # ---------------------------------------------------------------------------
+def _verificar_impressora_pdv(base_pdv, loja, pdv, props):
+    """Verifica o estado da impressora de um PDV.
+    Retorna dict {param, constante, esperado, atual, status, erro}."""
+    arq_per_rel = 'p2k\\bin\\parametrosGeraisPerifericos.properties'
+    arq_per_abs = os.path.join(f'\\\\{base_pdv}\\C$', arq_per_rel) if base_pdv else arq_per_rel
+
+    r = {'param': 'impressora', 'constante': 'IMPRESSORA_PRINCIPAL',
+         'esperado': '', 'atual': '', 'status': 'ERRO', 'erro': ''}
+    try:
+        if not os.path.exists(arq_per_abs):
+            r['erro'] = 'Arquivo parametrosGeraisPerifericos.properties não encontrado'
+            return r
+
+        valor          = ler_valor_constante(arq_per_abs, 'IMPRESSORA_PRINCIPAL') or ''
+        hash_virtual   = _imp_virtual_hash(props)
+        portas_fisicas = _imp_fisica_portas(props)
+        r['atual'] = valor
+
+        if hash_virtual and valor == hash_virtual:
+            arq_ger_abs = os.path.join(f'\\\\{base_pdv}\\C$', 'p2k\\bin\\parametrosGeraisPDV.properties') if base_pdv else 'p2k\\bin\\parametrosGeraisPDV.properties'
+            loja_sem_zeros = loja.lstrip('0') or '0'
+            token_esp = str(int(loja_sem_zeros + pdv) * 8963)
+            token_atu = ler_valor_constante(arq_ger_abs, 'TOKEN_HABILITA_IMP_NAO_FISCAL_VIRTUAL') if os.path.exists(arq_ger_abs) else None
+            papel_atu = ler_valor_constante(arq_ger_abs, 'VALIDA_PAPEL_INICIO_VENDA') if os.path.exists(arq_ger_abs) else None
+            token_ok  = token_atu is not None and token_atu.strip() == token_esp
+            papel_ok  = papel_atu is not None and papel_atu.strip().lower() == 'false'
+            r['param']    = 'impressora (Virtual)'
+            r['esperado'] = hash_virtual
+            if token_ok and papel_ok:
+                r['status'] = 'OK'
+            else:
+                problemas = []
+                if not token_ok:
+                    problemas.append(f'TOKEN esperado {token_esp}, lido {token_atu!r}')
+                if not papel_ok:
+                    problemas.append(f'VALIDA_PAPEL esperado false, lido {papel_atu!r}')
+                r['status'] = 'DIVERGENTE'
+                r['erro']   = '; '.join(problemas)
+        else:
+            porta = next((p for p, h in portas_fisicas.items() if h == valor), None)
+            if porta:
+                r['param']    = f'impressora (Física {porta})'
+                r['esperado'] = valor
+                r['status']   = 'OK'
+            elif valor:
+                r['param']    = 'impressora'
+                r['esperado'] = '(virtual ou física conhecida)'
+                r['status']   = 'DIVERGENTE'
+                r['erro']     = 'Hash de IMPRESSORA_PRINCIPAL não reconhecido'
+            else:
+                r['param']    = 'impressora'
+                r['esperado'] = '(virtual ou física conhecida)'
+                r['status']   = 'DIVERGENTE'
+                r['erro']     = 'IMPRESSORA_PRINCIPAL ausente ou vazio'
+    except Exception as e:
+        r['erro'] = str(e)
+    return r
+
+
 def _verificar_pdv_params(base_pdv, props):
     """Verifica todos os parâmetros de um PDV. Retorna lista de dicts {param, status, erro}."""
     params = sorted({k[:-8] for k in props if k.endswith('.arquivo')})
@@ -1005,19 +1266,21 @@ def _verificar_pdv_params(base_pdv, props):
             if base_pdv else caminho_relativo
         )
 
-        r = {'param': param, 'status': 'ERRO', 'erro': ''}
+        r = {'param': param, 'constante': constante, 'esperado': valor_esperado,
+             'atual': '', 'status': 'ERRO', 'erro': ''}
         try:
             if not os.path.exists(caminho_absoluto):
                 r['erro'] = 'Arquivo não encontrado'
             elif eh_dat:
                 with open(caminho_absoluto, 'r', encoding='utf-8', errors='replace') as f:
-                    atual = f.read().strip()
-                r['status'] = 'OK' if atual == valor_esperado.strip() else 'DIVERGENTE'
+                    r['atual'] = f.read().strip()
+                r['status'] = 'OK' if r['atual'] == valor_esperado.strip() else 'DIVERGENTE'
             else:
                 atual = ler_valor_constante(caminho_absoluto, constante)
                 if atual is None:
                     r['erro'] = f'Constante "{constante}" não encontrada'
                 else:
+                    r['atual']  = atual
                     r['status'] = 'OK' if atual == valor_esperado.strip() else 'DIVERGENTE'
         except Exception as e:
             r['erro'] = str(e)
@@ -1074,6 +1337,7 @@ def processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, emai
 
             versao_pdv = ler_versao_pdv(base_pdv, props)
             resultados = _verificar_pdv_params(base_pdv, props)
+            resultados.append(_verificar_impressora_pdv(base_pdv, loja, pdv, props))
             n_ok  = sum(1 for r in resultados if r['status'] == 'OK')
             n_div = sum(1 for r in resultados if r['status'] == 'DIVERGENTE')
             n_err = sum(1 for r in resultados if r['status'] == 'ERRO')
@@ -1940,4 +2204,11 @@ def main():
         time.sleep(intervalo * 60)
 
 if __name__ == '__main__':
+    # Autoteste de logging: cria/append no arquivo fixo e sai, sem conectar em
+    # e-mail nem tocar nos PDVs. Uso: agent_extrator_log.exe --selftest-log
+    if '--selftest-log' in sys.argv:
+        log('[SELFTEST] Verificacao de logging OK')
+        print(f'LOG_FILE={LOG_FILE}')
+        print(f'Existe apos escrever: {os.path.exists(LOG_FILE)}')
+        sys.exit(0)
     main()

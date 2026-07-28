@@ -74,8 +74,8 @@ UFS_IE = ['AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS'
           'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO']
 
 # UFs realmente presentes na base de CEPs (static/data/base_de_ceps.json).
-# Não inclui AC, que não tem nenhum registro na base de referência.
-UFS_CEP = ['AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT',
+# Todas as 27 UFs têm registros na base (AC incluído a partir do enriquecimento).
+UFS_CEP = ['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT',
            'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO']
 
 SECTIONS = [
@@ -274,13 +274,20 @@ SECTIONS = [
             f('loyaltyProgramCreateSource', 'Origem de Criação', 'text', False, 'LMBR-IDB-SUPPORT'),
             f('loyaltyProgramStatusloyaltyCreationDate', 'Data de Criação no Programa', 'text_auto', False, 'Automatico'),
             f('loyaltyProgramLeadIndicator', 'Indicador de Lead', 'bool', False, False),
-            f('loyaltyProgramAdhesionOptinDatetime', 'Data do Optin de Adesão', 'text_auto', False, 'Automatico'),
-            f('loyaltyProgramAdhesionOptinIndicator', 'Optin de Adesão', 'bool', False, True),
-            f('loyaltyProgramAdhesionOptinPerformingApp', 'App Responsável pela Adesão', 'text', False, 'LMBR-IDB-SUPPORT Loyalty'),
             f('loyaltyProgramProfessionalAssociationName', 'Associação Profissional', 'select', False, 'cau', ['cau', 'crea', 'abd']),
             f('loyaltyProgramProfessionalAssociationRegistrationNumber', 'Registro na Associação', 'text', False, 'A91771-0'),
             f('loyaltyProgramProfessionalAssociationDocumentationStatus', 'Status da Documentação', 'select', False, 'approved',
               ['denied', 'pendingSending', 'pendingApproval', 'approved']),
+        ],
+        'subgroups': [
+            {
+                'id': 'loyalty_adhesion_optin', 'title': 'Optin de Adesão',
+                'fields': [
+                    f('loyaltyProgramAdhesionOptinIndicator', 'Optin de Adesão', 'bool', False, True),
+                    f('loyaltyProgramAdhesionOptinDatetime', 'Data do Optin de Adesão', 'text_auto', False, 'Automatico'),
+                    f('loyaltyProgramAdhesionOptinPerformingApp', 'App Responsável pela Adesão', 'text', False, 'LMBR-IDB-SUPPORT Loyalty'),
+                ],
+            },
         ],
     },
     {

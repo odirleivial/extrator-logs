@@ -5,81 +5,35 @@
     <title>Requisição API</title>
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
     <style>
-        .api-form {
-            margin: 20px 0;
-            padding: 15px;
-            background-color: #f0f4f8;
+        .api-meta {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px 14px;
+            margin: 6px 0 14px;
+            padding: 10px 12px;
+            background: #f0f4f8;
             border-radius: 5px;
+            font-size: 0.82rem;
+            color: #555;
         }
-        .api-form label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 600;
-            color: #4a90e2;
-        }
-        .api-form select,
-        .api-form textarea,
-        .api-form input,
-        .api-form button {
-            width: 100%;
-            padding: 8px;
-            margin-bottom: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 0.9rem;
-            box-sizing: border-box;
-        }
-        .api-form textarea {
-            min-height: 120px;
+        .api-meta div { overflow: hidden; text-overflow: ellipsis; }
+        .api-meta strong { color: #4a90e2; }
+        #body_group { display: none; }
+        .retorno-box { margin-top: 18px; }
+        #retorno {
+            min-height: 220px;
+            font-family: monospace;
             resize: vertical;
         }
-        .api-form button {
-            background-color: #4a90e2;
-            color: white;
-            border: none;
-            cursor: pointer;
-            font-weight: 600;
-            width: 30%;
-        }
-        
-        .api-form button:hover {
-            background-color: #3a7bc8;
-        }
-        .retorno-container {
-            margin-top: 20px;
-        }
-        .retorno-container textarea {
-            min-height: 220px;
+        .acoes-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 6px;
         }
     </style>
     <script>
-        function formatarBodyRetorno(retorno) {
-            // retorno = { status_code, headers, body }
-            const headers = retorno.headers || {};
-            const body = retorno.body || '';
-            const contentType = (headers['Content-Type'] || headers['content-type'] || '').toLowerCase();
-
-            // JSON
-            if (contentType.includes('application/json')) {
-                try {
-                    const obj = JSON.parse(body);
-                    return JSON.stringify(obj, null, 2);
-                } catch (e) {
-                    // se não parsear, devolve como veio
-                    return body;
-                }
-            }
-
-            // XML
-            if (contentType.includes('application/xml') || contentType.includes('text/xml')) {
-                // tentativa simples de identar: quebra por ><
-                // aqui dá pra sofisticar com um parser, mas mantemos simples
-                return body;
-            }
-
-            // Texto "cru" (plain/text, html, etc.)
-            return body;
-        }
+        var apis = {{ apis | tojson | safe }};
 
         function mostrarAlerta(mensagem, tipo) {
             var alerta = document.getElementById("alerta");
@@ -97,103 +51,199 @@
             if (e.target.matches("input, select, textarea")) ocultarAlerta();
         });
 
-        function fazerRequisicao() {
-            const api = document.getElementById('api').value;
-            const body = document.getElementById('body').value;
+        function apiSelecionada() {
+            var nome = document.getElementById("api").value;
+            return apis.find(function(a) { return a.nome === nome; }) || null;
+        }
+
+        function formatarBodyRetorno(retorno) {
+            var headers = retorno.headers || {};
+            var body = retorno.body || '';
+            var contentType = (headers['Content-Type'] || headers['content-type'] || '').toLowerCase();
+            if (contentType.indexOf('application/json') !== -1) {
+                try { return JSON.stringify(JSON.parse(body), null, 2); }
+                catch (e) { return body; }
+            }
+            return body;
+        }
+
+        function aoTrocarApi() {
+            var api = apiSelecionada();
+            var metaBox = document.getElementById("api_meta");
+            var paramInput = document.getElementById("parametro");
+            var bodyGroup = document.getElementById("body_group");
+            var bodyTa = document.getElementById("body");
+
+            // limpa resultado anterior
+            document.getElementById("status_code").value = '';
+            document.getElementById("retorno").value = '';
 
             if (!api) {
-                mostrarAlerta('Selecione uma API.', 'erro');
+                metaBox.style.display = "none";
+                paramInput.value = '';
+                paramInput.placeholder = 'Parâmetro';
+                bodyGroup.style.display = "none";
+                bodyTa.value = '';
                 return;
             }
+
+            var metodo = (api.method || 'GET').toUpperCase();
+            metaBox.style.display = "grid";
+            metaBox.innerHTML =
+                "<div><strong>Método:</strong> " + metodo + "</div>" +
+                "<div style='grid-column:span 2'><strong>URL:</strong> " + (api.url || '-') + "</div>";
+
+            // parâmetro: valor padrão + dica como placeholder
+            paramInput.value = api.params || '';
+            paramInput.placeholder = api.param_hint ? api.param_hint : 'Parâmetro';
+
+            // body: oculto em GET
+            if (metodo === 'GET') {
+                bodyGroup.style.display = "none";
+                bodyTa.value = '';
+            } else {
+                bodyGroup.style.display = "block";
+                bodyTa.value = api.body || '';
+            }
+        }
+
+        function fazerRequisicao() {
+            var api = apiSelecionada();
+            if (!api) { mostrarAlerta('Selecione uma API.', 'erro'); return; }
             ocultarAlerta();
 
-            const bodyData = new URLSearchParams();
-            bodyData.append('api', api);
-            bodyData.append('body', body);
+            var metodo = (api.method || 'GET').toUpperCase();
+            var dados = new URLSearchParams();
+            dados.append('api', api.nome);
+            dados.append('parametro', document.getElementById('parametro').value);
+            if (metodo !== 'GET') dados.append('body', document.getElementById('body').value);
 
             fetch('/fazer-requisicao-api', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: bodyData
+                body: dados
             })
-            .then(r => r.json())
-            .then(d => {
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
                 if (d.sucesso) {
-                    const retorno = d.retorno;
-                    // status_code em campo próprio
-                    document.getElementById('status_code').value = retorno.status_code ?? '';
-
-                    // corpo formatado conforme tipo
-                    const bodyFormatado = formatarBodyRetorno(retorno);
-                    document.getElementById('retorno').value = bodyFormatado;
+                    document.getElementById('status_code').value = d.retorno.status_code != null ? d.retorno.status_code : '';
+                    document.getElementById('retorno').value = formatarBodyRetorno(d.retorno);
+                    mostrarAlerta('Requisição concluída (status ' + d.retorno.status_code + ').', 'sucesso');
                 } else {
                     mostrarAlerta('Erro: ' + d.mensagem, 'erro');
                 }
             })
-            .catch(e => mostrarAlerta('Erro: ' + e, 'erro'));
+            .catch(function(e) { mostrarAlerta('Erro: ' + e, 'erro'); });
         }
 
-        function salvarRetorno() {
-            const retorno = document.getElementById('retorno').value.trim();
-            if (!retorno) {
-                mostrarAlerta('Nenhum retorno para salvar.', 'erro');
-                return;
-            }
+        function _corpoRetorno() {
+            var api = apiSelecionada();
+            var retorno = document.getElementById('retorno').value.trim();
+            if (!api) { mostrarAlerta('Selecione uma API.', 'erro'); return null; }
+            if (!retorno) { mostrarAlerta('Faça a requisição antes: não há retorno.', 'erro'); return null; }
+            var dados = new URLSearchParams();
+            dados.append('api', api.nome);
+            dados.append('retorno', retorno);
+            dados.append('status_code', document.getElementById('status_code').value);
+            return dados;
+        }
+
+        function baixarArquivo() {
+            var dados = _corpoRetorno();
+            if (!dados) return;
             ocultarAlerta();
-
-            // aqui continuamos mandando o JSON completo do retorno se quiser,
-            // mas como agora só temos o body no textarea,
-            // a rota de salvar pode ser adaptada para salvar só texto também.
-            const bodyData = new URLSearchParams();
-            bodyData.append('retorno', retorno);
-
-            fetch('/salvar-retorno-api', {
+            fetch('/requisicao-api/gerar', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: bodyData
+                body: dados
             })
-            .then(r => r.json())
-            .then(d => {
-                if (d.sucesso) {
-                    mostrarAlerta('Retorno salvo em: ' + d.caminho, 'sucesso');
-                } else {
-                    mostrarAlerta('Erro: ' + d.mensagem, 'erro');
-                }
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.sucesso) { mostrarAlerta('Erro: ' + d.mensagem, 'erro'); return; }
+                var iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                iframe.src = '/requisicao-api/baixar/' + encodeURIComponent(d.arquivo);
+                document.body.appendChild(iframe);
+                mostrarAlerta('Download iniciado: ' + d.arquivo, 'sucesso');
             })
-            .catch(e => mostrarAlerta('Erro: ' + e, 'erro'));
+            .catch(function(e) { mostrarAlerta('Erro: ' + e, 'erro'); });
         }
+
+        function enviarPorEmail() {
+            var dados = _corpoRetorno();
+            if (!dados) return;
+            var emailDestino = document.getElementById('email_destino').value;
+            if (!emailDestino) { mostrarAlerta('Selecione um e-mail de destino.', 'erro'); return; }
+            ocultarAlerta();
+            dados.append('email_destino', emailDestino);
+            fetch('/requisicao-api/email', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: dados
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.sucesso) mostrarAlerta(d.mensagem, 'sucesso');
+                else mostrarAlerta('Erro: ' + d.mensagem, 'erro');
+            })
+            .catch(function(e) { mostrarAlerta('Erro: ' + e, 'erro'); });
+        }
+
+        document.addEventListener("DOMContentLoaded", function() {
+            document.getElementById("api").addEventListener("change", aoTrocarApi);
+            aoTrocarApi();
+        });
     </script>
 </head>
 <body>
     <h2>Requisição API</h2>
     <div id="alerta" style="display:none;"></div>
 
-    <div class="api-form">
+    <form id="form_api">
         <label for="api">API:</label>
-        <select id="api" name="api">
+        <select id="api" name="api" required>
             <option value="">-- Selecione uma API --</option>
             {% for api in apis %}
                 <option value="{{ api.nome }}">{{ api.nome }}</option>
             {% endfor %}
         </select>
-        
-        <input type="text" id="url_params" name="url_params" placeholder="Ex: ?id=123&active=true" />
 
-        <label for="body">Body:</label>
-        <textarea id="body" name="body" placeholder="Corpo da requisição (JSON, XML, texto, etc)"></textarea>
+        <div id="api_meta" class="api-meta" style="display:none;"></div>
+
+        <label for="parametro">Parâmetro:</label>
+        <input type="text" id="parametro" name="parametro" placeholder="Parâmetro" />
+
+        <div id="body_group">
+            <label for="body">Body:</label>
+            <textarea id="body" name="body" style="min-height:120px;resize:vertical;font-family:monospace"
+                      placeholder="Corpo da requisição (JSON, XML, texto...)"></textarea>
+        </div>
 
         <button type="button" onclick="fazerRequisicao()">Fazer Requisição</button>
-    </div>
+    </form>
 
-    <div class="api-form">
+    <div class="retorno-box">
         <label for="status_code">Status code:</label>
         <input type="text" id="status_code" name="status_code" readonly />
 
-        <label for="retorno">Retorno (body):</label>
-        <textarea id="retorno" name="retorno" readonly placeholder="Body da resposta da API será exibido aqui"></textarea>
+        <label for="retorno">Retorno:</label>
+        <textarea id="retorno" name="retorno" readonly placeholder="O retorno da API será exibido aqui"></textarea>
 
-        <br>
-        <button type="button" onclick="salvarRetorno()">Salvar Retorno</button>
+        <label for="email_destino">E-mail destino:</label>
+        <select id="email_destino" name="email_destino">
+            {% set emails = config_props.get('emails_destino', '').split(',') %}
+            {% for email in emails %}
+                {% set email = email.strip() %}
+                {% if email %}
+                <option value="{{ email }}" {% if loop.first %}selected{% endif %}>{{ email }}</option>
+                {% endif %}
+            {% endfor %}
+        </select>
+
+        <div class="acoes-row">
+            <button type="button" onclick="enviarPorEmail()">Enviar por E-mail</button>
+            <button type="button" onclick="baixarArquivo()">Download</button>
+        </div>
     </div>
 </body>
 </html>

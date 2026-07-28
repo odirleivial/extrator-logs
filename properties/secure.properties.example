@@ -13,9 +13,8 @@ oracle_service=NOME_SERVICE
 oracle_user=usuario
 oracle_password=senha
 
-# === APIs externas - URLs, tokens e chaves ===
-# api.NOME_API.url=https://...
-# api.NOME_API.header=Apikey=XXX; Accept=application/json
-# api.NOME_API.method=GET
-# api.NOME_API.params=/endpoint-opcional
-# api.NOME_API.token=bearer-token-opcional
+# === APIs externas - APIKEY (sensível) ===
+# Cadastre/edite as APIs pela interface (Configurações → Requisição API).
+# Os metadados (url, método, parâmetro, dica, body) ficam em config.properties;
+# apenas a APIKEY é gravada aqui, no formato:
+# api.NOME_API.apikey=chave-secreta

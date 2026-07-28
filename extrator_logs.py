@@ -9,7 +9,8 @@ import oracledb, csv, subprocess
 from datetime import datetime
 from logger import logger
 from parametrizacao_pdv import pagina_configurar_pdv, enviar_configuracao_pdv, verificar_configuracao_pdv, relatorio_parametrizacao, versao_pdv, reiniciar_pdv, fechar_pdv
-from request_api import (pagina_requisicao_api,fazer_requisicao_api,salvar_retorno)
+from request_api import (pagina_requisicao_api, fazer_requisicao_api, obter_apis,
+                         gerar_retorno_download, baixar_retorno, enviar_retorno_email)
 from mdm import pagina_mdm, consultar_cliente_mdm, cadastrar_cliente_mdm, atualizar_cliente_mdm
 
 # BUNDLE_DIR: recursos somente-leitura empacotados (templates, static)
@@ -84,14 +85,16 @@ def ler_config_completo(*args):
     return props
 
 def get_oracle_conn(props):
+    dsn = f"{props['oracle_host']}:{props['oracle_port']}/{props['oracle_service']}"
+    logger.info(f"Conectando ao Oracle: host={props['oracle_host']} service={props['oracle_service']} user={props['oracle_user']}")
     try:
-        dsn = f"{props['oracle_host']}:{props['oracle_port']}/{props['oracle_service']}"
-        logger.info(f"Conexão Oracle estabelecida: {props['oracle_host']}")
-        return oracledb.connect(
+        conn = oracledb.connect(
             user=props['oracle_user'],
             password=props['oracle_password'],
             dsn=dsn
         )
+        logger.info("Conexão Oracle estabelecida com sucesso")
+        return conn
     except Exception as e:
         logger.error(f"Erro ao conectar ao Oracle: {str(e)}")
         raise
@@ -111,6 +114,8 @@ PROP_SECTIONS = [
      lambda k: k == 'logs'),
     ("# === Parâmetros de configuração de PDV ===",
      lambda k: k == 'PARAMETROS_PDV'),
+    ("# === APIs externas - metadados (a APIKEY fica em secure.properties) ===",
+     lambda k: k.startswith('api.') or k == 'api_order'),
     ("# === Oracle - consultas SQL disponíveis ===",
      lambda k: k.startswith('oracle_query')),
 ]
@@ -188,8 +193,8 @@ def exportar_consulta_para_csv(nome_consulta, loja='', pdv='', nsu='', data='', 
     sql = sql.replace('$NSU', nsu if nsu else '')
     sql = sql.replace('$DATA', data_oracle if data_oracle else '')
     
-    logger.debug(f"SQL final: {sql}")
-    
+    logger.info(f"SQL final da consulta {nome_consulta}: {sql}")
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     ts = datetime.now().strftime('%Y%m%d%H%M%S')
     
@@ -359,19 +364,47 @@ def compactar_csvs(caminhos_arquivo, nome_zip):
         logger.error(f"Erro ao compactar arquivos: {str(e)}")
         raise
 
-def obter_apis_do_props(props):
-    apis = {}
-    for key, value in props.items():
-        if key.startswith('api.') and '.' in key:
-            partes = key.split('.')
-            if len(partes) < 3:
-                continue
-            nome = partes[1]
-            campo = partes[2]  # url, header, token, method, params
-            if nome not in apis:
-                apis[nome] = {'nome': nome}
-            apis[nome][campo] = value
-    return sorted(apis.values(), key=lambda a: a['nome'])
+def salvar_apikeys_secure(arquivo, apikeys):
+    """Atualiza apenas as linhas api.<nome>.apikey no secure.properties, preservando
+    todo o restante do arquivo (credenciais Oracle, e-mail, MDM, etc.).
+
+    apikeys: dict {nome_api: apikey}. APIs ausentes têm sua apikey removida do arquivo.
+    Também remove chaves api.* legadas (url/header/method/params) que porventura
+    tenham ficado em secure.properties — esses metadados agora vivem em config.properties.
+    """
+    try:
+        linhas_preservadas = []
+        if os.path.exists(arquivo):
+            with open(arquivo, 'r', encoding='utf-8') as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith('#') and '=' in stripped:
+                        key = stripped.split('=', 1)[0].strip()
+                        if key.startswith('api.'):
+                            continue  # descarta qualquer linha de API — será reescrita
+                    linhas_preservadas.append(line.rstrip('\n'))
+
+        # Remove o cabeçalho antigo da seção de APIs, se existir, para não duplicar
+        marcador = '# === APIs externas'
+        linhas_preservadas = [l for l in linhas_preservadas if not l.strip().startswith(marcador)]
+
+        # Remove linhas em branco redundantes no fim
+        while linhas_preservadas and linhas_preservadas[-1].strip() == '':
+            linhas_preservadas.pop()
+
+        linhas = list(linhas_preservadas)
+        apikeys_validas = {n: k for n, k in apikeys.items() if k}
+        if apikeys_validas:
+            linhas.append('')
+            linhas.append('# === APIs externas - APIKEY (sensível) ===')
+            for nome in sorted(apikeys_validas):
+                linhas.append(f'api.{nome}.apikey={apikeys_validas[nome]}')
+
+        with open(arquivo, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(linhas) + '\n')
+        logger.info(f"APIKEYs salvas em {arquivo} ({len(apikeys_validas)} API(s))")
+    except Exception as e:
+        logger.error(f"Erro ao salvar APIKEYs em {arquivo}: {str(e)}")
 
 
 @app.route('/')
@@ -434,9 +467,17 @@ def requisicao_api_page():
 def fazer_requisicao_api_route():
     return fazer_requisicao_api(app, ler_config_completo, CONFIG_FILE)
 
-@app.route('/salvar-retorno-api', methods=['POST'])
-def salvar_retorno_route():
-    return salvar_retorno(app, ler_config_completo, CONFIG_FILE)
+@app.route('/requisicao-api/gerar', methods=['POST'])
+def requisicao_api_gerar_route():
+    return gerar_retorno_download(app, ler_config_completo, CONFIG_FILE)
+
+@app.route('/requisicao-api/baixar/<nome_arquivo>')
+def requisicao_api_baixar_route(nome_arquivo):
+    return baixar_retorno(app, nome_arquivo)
+
+@app.route('/requisicao-api/email', methods=['POST'])
+def requisicao_api_email_route():
+    return enviar_retorno_email(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_com_anexos)
 
 @app.route('/mdm')
 def mdm_page():
@@ -528,13 +569,39 @@ def config():
             props['oracle_query_names'] = ','.join(n for n in nomes if n != remover)
             props.pop(f'oracle_query.{remover}', None)
 
+        # APIs – reconstrói todas a partir do formulário (metadados no config, apikey no secure).
+        # A ordem dos blocos no formulário (índices 0,1,2...) define a ordem do combobox.
+        for k in [k for k in props if k.startswith('api.')]:
+            props.pop(k, None)
+        apikeys = {}
+        indices = sorted(
+            {int(c.rsplit('_', 1)[-1]) for c in request.form if c.startswith('api_nome_')}
+        )
+        ordem = []
+        for idx in indices:
+            nome = request.form.get(f'api_nome_{idx}', '').strip()
+            if not nome:
+                continue
+            props[f'api.{nome}.url']        = request.form.get(f'api_url_{idx}', '').strip()
+            props[f'api.{nome}.method']     = request.form.get(f'api_method_{idx}', 'GET').strip().upper()
+            props[f'api.{nome}.params']     = request.form.get(f'api_params_{idx}', '').strip()
+            props[f'api.{nome}.param_hint'] = request.form.get(f'api_param_hint_{idx}', '').strip()
+            props[f'api.{nome}.body']       = request.form.get(f'api_body_{idx}', '').strip()
+            apikeys[nome] = request.form.get(f'api_apikey_{idx}', '').strip()
+            ordem.append(nome)
+        props['api_order'] = ','.join(ordem)
+
         salvar_properties(CONFIG_FILE, props)
+        salvar_apikeys_secure(SECURE_FILE, apikeys)
         return redirect('/config?saved=1')
 
     # GET – preparar dados (somente props editáveis para o formulário)
     lojas = converterParaArray(props.get('stores', ''))
     pdvs_dict = {f'{loja}_pdvs': converterParaArray(props.get(f'{loja}_pdvs', '')) for loja in lojas}
     emails_destino_lista = '\n'.join(e.strip() for e in props.get('emails_destino', '').split(',') if e.strip())
+
+    # APIs — mescla config + secure para exibir a apikey (mascarada na tela) na manutenção
+    apis = obter_apis(ler_config_completo())
 
     return render_template(
         'config.html',
@@ -543,6 +610,7 @@ def config():
         pdvs_dict=pdvs_dict,
         logs_str=','.join(converterParaArray(props.get('logs', ''))),
         emails_destino_lista=emails_destino_lista,
+        apis=apis,
         config_props=props,
     )
 

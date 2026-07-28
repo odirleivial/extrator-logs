@@ -276,22 +276,39 @@ def verificar_configuracao_pdv(app, ler_properties, config_file, gerar_pid, envi
     logger.info("Requisição de verificação de configuração de PDV recebida")
     props = ler_properties(config_file)
 
+    selecao = request.form.get('selecao', '').strip()
     email_destino = request.form.get('email_destino', '').strip()
-    loja = request.form.get('loja', '').strip() or '0007'
-    pdv = request.form.get('pdv', '').strip() or '53'
+
+    if not selecao:
+        msg = "Nenhuma loja/PDV selecionado."
+        logger.error(msg)
+        return jsonify({'sucesso': False, 'mensagem': msg}), 400
 
     if not email_destino:
         msg = "E-mail de destino é obrigatório."
         logger.error(msg)
         return jsonify({'sucesso': False, 'mensagem': msg}), 400
 
+    linhas = []
+    for parte in selecao.split('|'):
+        if ':' in parte:
+            loja, pdvs = parte.split(':', 1)
+            linhas.append(f"  Loja {loja.strip()} - PDVs: {pdvs.strip()}")
+        else:
+            linhas.append(f"  {parte.strip()}")
+    selecao_formatada = '\n'.join(linhas)
+
     remetente = props.get('email_envio', '')
     senha = props.get('senha_envio', '')
 
     pid = gerar_pid()
-
     assunto = f"[Verificar Parametrização] - [{pid}]"
-    corpo = f"PID: {pid}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}"
+    corpo = (
+        f"PID: {pid}\n"
+        f"Destino: {email_destino}\n"
+        f"Selecao: {selecao}\n\n"
+        f"PDVs para verificação:\n{selecao_formatada}"
+    )
 
     try:
         enviar_email_gmail(remetente, senha, remetente, assunto, corpo)

@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
-**Data:** 17 de Julho de 2026  
-**Versão:** 2.18.0
+**Data:** 27 de Julho de 2026  
+**Versão:** 2.25.2
 
 ---
 
@@ -18,6 +18,41 @@ A versão é definida em `version.py` e propagada automaticamente para o footer 
 ---
 
 ## 📋 Histórico de Versões
+
+### 2.25.2 — 27/07/2026
+- Aba MDM (Alterar): reordenação das seções — a seção do tipo do cliente (**Pessoa Física (Inhabitant)** ou **Pessoa Jurídica (Professional Organization)**) passa a ser exibida primeiro, com **Dados Gerais** logo abaixo, seguida das demais seções (igual ao comportamento do Cadastro)
+
+### 2.25.1 — 27/07/2026
+- Aba MDM (Cadastrar e Alterar): os campos de **Optin de Adesão** do Programa de Fidelidade (Optin de Adesão, Data do Optin de Adesão e App Responsável) passam a ser destacados num subgrupo próprio — no Cadastro, com a mesma caixa de borda azul tracejada usada no Optin de E-mail; na Alteração, como uma caixa própria "Optin de Adesão", igual aos demais optins
+
+### 2.25.0 — 27/07/2026
+- Aba MDM (Cadastrar): novo preset **Programa de Fidelidade**, exibido **apenas para PF**, com combobox: Não, 1 - LMCV, 2 - Lead, 4 - PRO/EXECUTOR e 7 - PRO/EAD. Ao escolher uma opção, marca e preenche os campos da seção Loyalty conforme o mapeamento da planilha `preset_fidelidade.xlsx`; campos de loyalty não previstos na opção ficam desmarcados (não vão no payload). "Não" limpa a seção
+- Como o programa de fidelidade é só para PF: ao marcar o cliente como **PJ**, todos os campos da seção Loyalty são desmarcados e o preset é ocultado/zerado
+- `montarPayload` deixa de enviar os sub-objetos `adhesionOptin`/`professionalAssociation` quando vazios (campos sem valor não são enviados)
+
+### 2.22.1 — 22/07/2026
+- Recompilação do agente com o log de nome fixo (2.22.0) e novo modo de autoteste `agent_extrator_log.exe --selftest-log`, que cria/anexa no `agente_extrator.log` e sai sem conectar em e-mail nem tocar nos PDVs — permite validar rapidamente o caminho do log na máquina
+
+### 2.22.0 — 22/07/2026
+- **Agente — arquivo de log com nome fixo e rotação diária por renomeação:**
+  - O dia corrente é sempre gravado em `log/agente_extrator.log` (nome fixo), em vez de `operacao_<data>.log`
+  - Na virada do dia (ou no primeiro registro após reinício em outra data), o arquivo fixo é renomeado para `agente_extrator_<data-anterior>.log` e um novo arquivo fixo é iniciado para o dia — evita que o log cresça indefinidamente e mantém o histórico datado
+  - Reinícios no mesmo dia continuam anexando ao arquivo fixo; se já houver arquivo arquivado para aquela data, o conteúdo é anexado em vez de sobrescrito
+
+### 2.20.0 — 21/07/2026
+- Aba MDM (Cadastrar e Alterar): o JSON gerado agora é **editável antes do envio**. Cada item da lista de payloads (e o JSON Patch da alteração) é exibido em um editor de texto com validação ao vivo (borda vermelha + mensagem quando o JSON fica inválido). No envio, é usado o JSON editado — validado antes de sair; no cadastro, o identificador do histórico é reextraído do JSON editado. Gerar novamente descarta as edições
+
+### 2.19.1 — 20/07/2026
+- Guia **Requisição API** (Configurações): botões **↑/↓** em cada API para definir a **ordem de exibição no combobox**. A ordem é persistida em `api_order` (config.properties) e respeitada tanto no cadastro quanto na funcionalidade; APIs sem ordem definida aparecem ao final, em ordem alfabética
+
+### 2.19.0 — 20/07/2026
+- **Requisição API reformulada** no padrão de layout da aba **Manutenção PDV**: seleção da API por combobox, campo **Parâmetro** com a *dica de parâmetro* exibida como placeholder, e campo **Body** exibido apenas para métodos diferentes de GET (omitido em GET). A requisição passa a suportar qualquer método (GET/POST/PUT/PATCH/DELETE)
+- O retorno da API agora pode ser **enviado por e-mail** (com combobox de destinatários e e-mail no padrão visual do sistema) ou **baixado** como arquivo (`.json`/`.xml`/`.txt` conforme o conteúdo), como na Exportação Oracle
+- Nova guia **Requisição API** em Configurações para **cadastro e manutenção** das APIs: nome (combobox), URL, APIKEY, parâmetro, dica de parâmetro, método e body padrão. A **APIKEY é exibida mascarada** (com botão Mostrar/Ocultar) e armazenada em `secure.properties`; os demais metadados ficam em `config.properties`. As chaves `api.*` legadas em `secure.properties` (url/header/method/params) migram automaticamente ao salvar
+
+### 2.18.1 — 17/07/2026
+- Base de endereços (`static/data/base_de_ceps.json`) enriquecida com **1.310 endereços reais e válidos** (via API pública ViaCEP): +30 por UF e +130 para SP, RJ, MG, RS e CE. Total passou de 3.431 para 4.741 registros
+- **AC** passa a ter endereços na base (30 registros) e foi incluído na lista de UFs de endereço (`UFS_CEP`), ficando disponível no combobox de UF do endereço e no preset UF
 
 ### 2.18.0 — 17/07/2026
 - Aba MDM (Cadastrar e Alterar): CNAEs gerados automaticamente agora são **válidos** (código e descrição oficiais). Nova base `static/data/base_de_cnaes.json` com as **1.332 subclasses CNAE do IBGE** (API oficial de serviços de dados), no mesmo padrão da base de CEPs
