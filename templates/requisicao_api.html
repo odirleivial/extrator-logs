@@ -89,9 +89,14 @@
 
             var metodo = (api.method || 'GET').toUpperCase();
             metaBox.style.display = "grid";
-            metaBox.innerHTML =
+            var metaHtml =
                 "<div><strong>Método:</strong> " + metodo + "</div>" +
                 "<div style='grid-column:span 2'><strong>URL:</strong> " + (api.url || '-') + "</div>";
+            if (api.token_provider) {
+                metaHtml += "<div style='grid-column:span 3'><strong>Token via:</strong> " + api.token_provider +
+                            " <span style='color:#888'>(gerado automaticamente antes da consulta)</span></div>";
+            }
+            metaBox.innerHTML = metaHtml;
 
             // parâmetro: valor padrão + dica como placeholder
             paramInput.value = api.params || '';

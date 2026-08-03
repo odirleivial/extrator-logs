@@ -1,0 +1,119 @@
+===========================================================================
+Server Agent SP (agente_sp) v2.0.0 - PowerShell
+===========================================================================
+
+Versao reduzida do Agent Extrator Log: apenas extracao de logs de
+servidores. Responde somente a e-mails com assunto contendo:
+
+    [Solicitação Log SP] - [PID]
+
+POR QUE POWERSHELL E NAO UM .EXE
+--------------------------------
+Neste servidor o SentinelOne bloqueia conexoes de rede de executaveis
+proprios/nao assinados (erro WinError 10013), mesmo com o firewall liberado.
+O agente roda entao sob o powershell.exe, assinado pela Microsoft, que o EDR
+ja considera confiavel. Nenhuma excecao no console do SentinelOne e
+necessaria. A versao .exe continua no repositorio para redes sem essa
+restricao.
+
+Corpo esperado do e-mail:
+    PID: <identificador>
+    Destino: <e-mail que recebera os logs>
+    Logs: <nome1,nome2,...>
+    Data: <dd/mm/yyyy>          (opcional - data usada nos nomes com data;
+                                 se ausente, usa a data atual)
+
+Logs disponiveis (definidos em agent.properties):
+    integrador_idb, webservices, ProcTrans_CSIDebugFile,
+    lgComandosSQL, csi_ws-safe, csi_safe-retaguarda
+
+---------------------------------------------------------------------------
+INSTALACAO (como servico Windows)
+---------------------------------------------------------------------------
+1. Copie esta pasta para o servidor.
+2. Ajuste agent.properties:
+   - email / senha (conta Gmail com senha de app)
+   - logs: log.<nome>.caminho e log.<nome>.formato
+3. Execute testar_agente.bat para conferir conexao e caminhos (opcional).
+4. Execute instalar_servico.bat COMO ADMINISTRADOR.
+   O servico "ServerAgentSP" sera instalado em C:\ServerAgentSP com inicio
+   automatico, executando:
+     powershell.exe -NoProfile -File C:\ServerAgentSP\server_agent_sp.ps1
+
+Scripts de gestao (executar como Administrador):
+    iniciar_servico.bat  - Inicia o servico
+    parar_servico.bat    - Para o servico
+    remover_servico.bat  - Remove o servico
+    testar_agente.bat    - Testa conexao IMAP e caminhos dos logs
+
+Logs do agente: C:\ServerAgentSP\log\
+Historico de envios: C:\ServerAgentSP\historico_envio_logs.csv
+
+---------------------------------------------------------------------------
+ACESSO AS PASTAS DE LOG (sem gravar senha)
+---------------------------------------------------------------------------
+Como servico, o agente roda como NT AUTHORITY\SYSTEM e acessa a rede com a
+CONTA DE COMPUTADOR deste servidor: DOMINIO\<NOME_DESTE_SERVIDOR>$
+Essa conta e gerenciada pelo AD, nao expira e nao e afetada pela troca diaria
+de senha do PAM. Por isso ela e o caminho correto, e nao gravar usuario/senha
+no agent.properties.
+
+Descubra o nome a conceder, neste servidor:
+    powershell -NoProfile -Command "\"$env:USERDOMAIN\$env:COMPUTERNAME`$\""
+
+Depois, em CADA servidor de log (10.56.62.139, .140, .152), como admin,
+conceda LEITURA a essa conta. Duas formas:
+
+ (A) RECOMENDADO - share dedicada somente-leitura por pasta de log:
+       New-SmbShare -Name LogsQA -Path 'D:\integrador-idb' `
+                    -ReadAccess 'DOMINIO\NOMEDOSERVIDORAGENTE$'
+     e ajuste o caminho no agent.properties:
+       log.integrador_idb.caminho=\\10.56.62.152\LogsQA
+     Vantagem: acesso minimo, so leitura, so na pasta de log.
+
+ (B) ATALHO - dar admin local (habilita as shares d$ ja configuradas):
+       net localgroup Administrators DOMINIO\NOMEDOSERVIDORAGENTE$ /add
+     Mantem o agent.properties como esta, mas concede muito mais acesso do
+     que o necessario. Prefira (A) se possivel.
+
+Confira depois com testar_agente.bat: ele mostra a identidade em uso e diz,
+para cada log, se o arquivo esta acessivel e qual o motivo quando nao esta.
+Atencao: rodando o teste manualmente voce usa SEU usuario, que costuma ter
+mais acesso que o servico. O teste real e olhar o log apos iniciar o servico.
+
+---------------------------------------------------------------------------
+POLITICA DE EXECUCAO DE SCRIPTS
+---------------------------------------------------------------------------
+A politica do dominio e RemoteSigned: scripts LOCAIS rodam normalmente; so
+arquivos vindos de download/zip ficam marcados como "da internet" e sao
+recusados. O instalador ja roda Unblock-File no script copiado, entao nada
+precisa ser alterado na politica.
+
+Se um dia a politica mudar para AllSigned, a solucao correta e assinar o
+server_agent_sp.ps1 com um certificado de assinatura de codigo interno.
+
+---------------------------------------------------------------------------
+FORMATO DA NOMENCLATURA DOS LOGS (agent.properties)
+---------------------------------------------------------------------------
+    log.<nome>.caminho = pasta onde o arquivo esta (UNC ou local)
+    log.<nome>.formato = nomenclatura do arquivo:
+        {texto}  -> parte fixa do nome
+        [tokens] -> data: yyyy=ano 4 dig., yy=ano 2 dig., mm=mes, dd=dia
+        texto fora de {} e [] (ex.: extensao) e mantido como esta
+
+    Exemplos:
+        {integrador}.log               -> integrador.log
+        {lgComandosSQL_}[YYYYmmdd].txt -> lgComandosSQL_20260803.txt
+        [ddmmyyyy].log                 -> 03082026.log
+
+No zip enviado, cada arquivo vai em uma subpasta com o nome do log, para
+evitar colisao entre logs que geram o mesmo nome (ex.: csi_ws-safe e
+csi_safe-retaguarda, ambos [ddmmyyyy].log).
+
+---------------------------------------------------------------------------
+TESTES (sem consumir e-mails da caixa)
+---------------------------------------------------------------------------
+    testar_agente.bat
+    powershell -NoProfile -File server_agent_sp.ps1 -TesteConexao
+    powershell -NoProfile -File server_agent_sp.ps1 -TesteFormato
+===========================================================================

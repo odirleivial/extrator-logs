@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
-**Data:** 27 de Julho de 2026  
-**Versão:** 2.25.2
+**Data:** 03 de Agosto de 2026  
+**Versão:** 2.29.0
 
 ---
 
@@ -19,7 +19,15 @@ A versão é definida em `version.py` e propagada automaticamente para o footer 
 
 ## 📋 Histórico de Versões
 
-### 2.25.2 — 27/07/2026
+### 2.29.0 — 03/08/2026
+- **Solicitar Logs — integração com o Server Agent SP:** nova loja **SERVERS_EP_SP** no combobox de lojas. Ao selecioná-la, o campo PDV é ocultado e a seção **Arquivos de Logs** passa a listar os logs dos servidores EP SP extraídos pelo agente (`integrador_idb`, `webservices`, `ProcTrans_CSIDebugFile`, `lgComandosSQL`, `csi_ws-safe`, `csi_safe-retaguarda`), cada checkbox com **hint (tooltip) do ip do servidor** de origem
+- A solicitação envia e-mail no formato do agente SP — assunto `[Solicitação Log SP] - [PID]` e corpo com `PID`, `Destino` e `Logs` (nomes separados por vírgula), sem Loja/PDV
+- Nova configuração **Logs SP** na aba Configurações (chave `logs_sp` no `config.properties`): um log por linha no formato `nome;ip`, editável pela interface
+
+### 2.28.0 — 29/07/2026
+- **Requisição API — encadeamento de token (OAuth client_credentials):** no cadastro de API há um novo combobox **API geradora de token**. Ao indicar uma API geradora, a funcionalidade chama essa API **antes** da consulta, extrai o token do retorno (JSON OAuth: `access_token`/`token`/`id_token` com `token_type`, ou token cru no corpo) e injeta automaticamente no `Authorization: Bearer` da requisição de consulta
+- **Requisição API — campo Headers por API:** novo campo (multi-linha, `Nome: Valor` ou `Nome=Valor`, um por linha) para enviar headers arbitrários na chamada (ex.: `Authorization: Basic ...`, `x-adeo-bu-id`, `adeo-operator`, `Cookie`). Precedência: defaults (Accept/Content-Type) < APIKEY < Headers < Authorization do token. As quebras de linha são gravadas codificadas (`\n`) para caber em uma linha do `.properties`
+- Na funcionalidade, quando a API usa geração de token, o painel de detalhes exibe **"Token via: <API>"**
 - Aba MDM (Alterar): reordenação das seções — a seção do tipo do cliente (**Pessoa Física (Inhabitant)** ou **Pessoa Jurídica (Professional Organization)**) passa a ser exibida primeiro, com **Dados Gerais** logo abaixo, seguida das demais seções (igual ao comportamento do Cadastro)
 
 ### 2.25.1 — 27/07/2026

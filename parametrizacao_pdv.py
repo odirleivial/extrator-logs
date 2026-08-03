@@ -9,12 +9,10 @@ def converter_para_array(valor):
     return valor if isinstance(valor, list) else []
 
 def pagina_configurar_pdv(app, ler_properties, config_file):
-    logger.debug("Página 'Manutenção PDV' acessada")
     props = ler_properties(config_file)
     return render_template('configurar_pdv.html', config_props=props)
 
 def enviar_configuracao_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
-    logger.info("Requisição de configuração de PDV recebida")
     props = ler_properties(config_file)
 
     selecao = request.form.get('selecao', '').strip()
@@ -72,7 +70,6 @@ def enviar_configuracao_pdv(app, ler_properties, config_file, gerar_pid, enviar_
 
 def relatorio_parametrizacao(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
     """Envia e-mail ao agente solicitando relatório de parametrização para os PDVs escolhidos."""
-    logger.info("Requisição de relatório de parametrização recebida")
     props = ler_properties(config_file)
 
     selecao = request.form.get('selecao', '').strip()
@@ -123,7 +120,6 @@ def relatorio_parametrizacao(app, ler_properties, config_file, gerar_pid, enviar
 
 def versao_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
     """Envia e-mail ao agente solicitando a versão dos PDVs escolhidos."""
-    logger.info("Requisição de versão de PDV recebida")
     props = ler_properties(config_file)
 
     selecao = request.form.get('selecao', '').strip()
@@ -173,7 +169,6 @@ def versao_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
 
 def reiniciar_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
     """Envia e-mail ao agente solicitando reinicialização dos PDVs escolhidos."""
-    logger.info("Requisição de reinicialização de PDV recebida")
     props = ler_properties(config_file)
 
     selecao = request.form.get('selecao', '').strip()
@@ -223,7 +218,6 @@ def reiniciar_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmai
 
 def fechar_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
     """Envia e-mail ao agente solicitando encerramento dos PDVs escolhidos."""
-    logger.info("Requisição de encerramento de PDV recebida")
     props = ler_properties(config_file)
 
     selecao = request.form.get('selecao', '').strip()
@@ -273,7 +267,6 @@ def fechar_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
 
 def verificar_configuracao_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
     """Envia e-mail de verificação de configuração para o e-mail digitado no pop-up."""
-    logger.info("Requisição de verificação de configuração de PDV recebida")
     props = ler_properties(config_file)
 
     selecao = request.form.get('selecao', '').strip()

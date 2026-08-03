@@ -36,23 +36,24 @@ CONFIG_FILE = os.path.join(PROPS_DIR, 'config.properties')
 SECURE_FILE = os.path.join(PROPS_DIR, 'secure.properties')
 OUTPUT_DIR  = os.path.join(APP_DIR, 'output')
 
+# Werkzeug loga uma linha por requisição HTTP (incluindo cada CSS/imagem), o que
+# domina o arquivo de log. Só acompanha o nível da aplicação quando em DEBUG;
+# fora disso registra apenas erros.
+_wz = logging.getLogger('werkzeug')
+_wz.setLevel(logging.INFO if logger.level <= logging.DEBUG else logging.ERROR)
+
 # Redireciona werkzeug para o mesmo arquivo de log quando empacotado
 if getattr(sys, 'frozen', False):
     from logger import _LOG_PATH
-    _wz_handler = logging.FileHandler(_LOG_PATH, encoding='utf-8')
-    _wz_handler.setFormatter(logging.Formatter(
-        '[%(asctime)s] - %(levelname)s - %(name)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    ))
-    for _name in ('werkzeug', 'flask.app'):
-        _lg = logging.getLogger(_name)
-        _lg.setLevel(logging.INFO)
-        _lg.addHandler(_wz_handler)
+    for _h in logger.handlers:
+        _wz.addHandler(_h)
+        logging.getLogger('flask.app').addHandler(_h)
+    logging.getLogger('flask.app').setLevel(logger.level)
     # Redireciona stdout/stderr para o log (sem console visível)
     sys.stdout = open(_LOG_PATH, 'a', encoding='utf-8')
     sys.stderr = sys.stdout
 
-logger.info("Aplicação iniciada")
+logger.info(f"===== Backoffice Equipe QA v{__version__} iniciado =====")
 
 @app.context_processor
 def inject_version():
@@ -71,7 +72,6 @@ def ler_properties(arquivo):
                 if '=' in line and not line.startswith('#'):
                     key, value = line.split('=', 1)
                     props[key.strip()] = value.strip()  # SEMPRE salva como STRING
-        logger.debug(f"Arquivo {arquivo} carregado com sucesso")      
         return props
     except Exception as e:
         logger.error(f"Erro ao ler arquivo {arquivo}: {str(e)}")
@@ -86,20 +86,22 @@ def ler_config_completo(*args):
 
 def get_oracle_conn(props):
     dsn = f"{props['oracle_host']}:{props['oracle_port']}/{props['oracle_service']}"
-    logger.info(f"Conectando ao Oracle: host={props['oracle_host']} service={props['oracle_service']} user={props['oracle_user']}")
     try:
         conn = oracledb.connect(
             user=props['oracle_user'],
             password=props['oracle_password'],
             dsn=dsn
         )
-        logger.info("Conexão Oracle estabelecida com sucesso")
+        logger.debug(f"Conexão Oracle estabelecida: {dsn} (user={props['oracle_user']})")
         return conn
     except Exception as e:
         logger.error(f"Erro ao conectar ao Oracle: {str(e)}")
         raise
 
 PROP_SECTIONS = [
+    ("# === Log - nível de detalhe e rotação do arquivo log/extrator_logs.log ===\n"
+     "# log.level: DEBUG | INFO | WARNING | ERROR | CRITICAL",
+     lambda k: k.startswith('log.')),
     ("# === Abas - controla quais abas ficam visíveis na interface (true/false) ===",
      lambda k: k.startswith('tab.')),
     ("# === E-mails - lista de destinatários disponíveis ===",
@@ -166,7 +168,6 @@ def converter_data_para_oracle(data_ddmmyyyy):
     try:
         dia, mes, ano = data_ddmmyyyy.split('/')
         data_oracle = f"{ano}{mes}{dia}"
-        logger.debug(f"Data convertida: {data_ddmmyyyy} -> {data_oracle}")
         return data_oracle
     except Exception as e:
         logger.error(f"Erro ao converter data {data_ddmmyyyy}: {str(e)}")
@@ -180,20 +181,22 @@ def exportar_consulta_para_csv(nome_consulta, loja='', pdv='', nsu='', data='', 
         logger.error(erro)
         raise ValueError(erro)
 
-    logger.info(f"Iniciando exportação da consulta: {nome_consulta}")
-    logger.debug(f"Filtros - Loja: {loja}, PDV: {pdv}, NSU: {nsu}, Data: {data}")
-    logger.debug(f"Formato: {formato}, Separador: {separador}")
+    logger.info(f"Exportando {nome_consulta} [loja={loja} pdv={pdv} nsu={nsu} data={data} formato={formato}]")
 
     # Converter data de DD/MM/YYYY para YYYYMMDD
     data_oracle = converter_data_para_oracle(data)
-    
+
     # Substituir variáveis
+    # $DATA_BR precisa ser substituído antes de $DATA (senão o replace de $DATA
+    # corromperia o prefixo de $DATA_BR). Use $DATA para colunas numéricas/YYYYMMDD
+    # (ex.: P2K_*) e $DATA_BR para colunas armazenadas como texto 'DD/MM/YYYY'.
     sql = sql.replace('$LOJA', loja if loja else '0')
     sql = sql.replace('$PDV', pdv if pdv else '0')
     sql = sql.replace('$NSU', nsu if nsu else '')
+    sql = sql.replace('$DATA_BR', data if data else '')
     sql = sql.replace('$DATA', data_oracle if data_oracle else '')
     
-    logger.info(f"SQL final da consulta {nome_consulta}: {sql}")
+    logger.debug(f"SQL final da consulta {nome_consulta}: {sql}")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     ts = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -232,7 +235,8 @@ def exportar_para_csv(caminho, colunas, dados, separador='.'):
         with open(caminho, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f, delimiter=';', lineterminator='\n')
             writer.writerow(colunas)
-            
+
+            erros_lob = 0
             for row in dados:
                 row_processada = []
                 for valor in row:
@@ -240,9 +244,11 @@ def exportar_para_csv(caminho, colunas, dados, separador='.'):
                     if hasattr(valor, 'read'):  # LOB object
                         try:
                             valor = valor.read()
-                            logger.debug("LOB convertido")
                         except Exception as e:
-                            logger.warning(f"Erro ao ler LOB: {str(e)}")
+                            # Só a primeira falha é logada — evita uma linha por registro
+                            if not erros_lob:
+                                logger.warning(f"Erro ao ler LOB: {str(e)}")
+                            erros_lob += 1
                             valor = "[LOB não lido]"
                     
                     if isinstance(valor, bytes):
@@ -259,8 +265,9 @@ def exportar_para_csv(caminho, colunas, dados, separador='.'):
                     else:
                         row_processada.append(str(valor) if valor is not None else '')
                 writer.writerow(row_processada)
-        
-        logger.debug(f"Arquivo CSV criado: {caminho}")
+
+        if erros_lob > 1:
+            logger.warning(f"{erros_lob} LOBs não puderam ser lidos em {os.path.basename(caminho)}")
     except Exception as e:
         logger.error(f"Erro ao exportar para CSV: {str(e)}")
         raise
@@ -287,17 +294,20 @@ def exportar_para_xlsx(caminho, colunas, dados, separador='.'):
             cell.font = header_font
         
         # Adicionar dados
+        erros_lob = 0
         for row_num, row in enumerate(dados, 2):
             for col_num, valor in enumerate(row, 1):
                 cell = ws.cell(row=row_num, column=col_num)
-                
+
                 # Converter LOBs
                 if hasattr(valor, 'read'):  # LOB object
                     try:
                         valor = valor.read()
-                        logger.debug(f"LOB convertido em linha {row_num}, coluna {col_num}")
                     except Exception as e:
-                        logger.warning(f"Erro ao ler LOB: {str(e)}")
+                        # Só a primeira falha é logada — evita uma linha por registro
+                        if not erros_lob:
+                            logger.warning(f"Erro ao ler LOB: {str(e)}")
+                        erros_lob += 1
                         valor = "[LOB não lido]"
                 
                 if isinstance(valor, bytes):
@@ -330,7 +340,8 @@ def exportar_para_xlsx(caminho, colunas, dados, separador='.'):
             ws.column_dimensions[column_letter].width = adjusted_width
         
         wb.save(caminho)
-        logger.debug(f"Arquivo XLSX criado: {caminho}")
+        if erros_lob > 1:
+            logger.warning(f"{erros_lob} LOBs não puderam ser lidos em {os.path.basename(caminho)}")
     except ImportError:
         logger.error("Módulo openpyxl não instalado. Execute: pip install openpyxl")
         raise ValueError("Para exportar em XLSX, instale openpyxl: pip install openpyxl")
@@ -346,16 +357,14 @@ def compactar_csvs(caminhos_arquivo, nome_zip):
                 if os.path.exists(arquivo):
                     arcname = os.path.basename(arquivo)
                     zipf.write(arquivo, arcname=arcname)
-                    logger.debug(f"Arquivo adicionado ao ZIP: {arcname}")
-        
-        logger.info(f"ZIP criado com sucesso: {nome_zip}")
-        
+
+        logger.info(f"ZIP criado: {nome_zip} ({len(caminhos_arquivo)} arquivo(s))")
+
         # Remover arquivos originais após compactação bem-sucedida
         for arquivo in caminhos_arquivo:
             try:
                 if os.path.exists(arquivo):
                     os.remove(arquivo)
-                    logger.debug(f"Arquivo removido: {arquivo}")
             except Exception as e:
                 logger.warning(f"Erro ao remover arquivo {arquivo}: {str(e)}")
         
@@ -423,12 +432,10 @@ def index():
 
 @app.route('/solicitar-logs')
 def solicitar_logs_page():
-    logger.debug("Página 'Solicitar Logs' acessada")
     return render_template('solicitar_logs.html', config_props=ler_config_completo())
 
 @app.route('/exportar-oracle')
 def exportar_oracle_page():
-    logger.debug("Página 'Exportar Dados Oracle' acessada")
     return render_template('exportar_oracle.html', config_props=ler_config_completo())
 
 @app.route('/configurar-pdv')
@@ -536,6 +543,10 @@ def config():
         # Logs
         props['logs'] = request.form.get('logs', props.get('logs', ''))
 
+        # Logs SP (SERVERS_EP_SP) — um por linha "nome;ip" no formulário
+        logs_sp_raw = request.form.get('logs_sp', '').replace('\n', ',')
+        props['logs_sp'] = ','.join(l.strip() for l in logs_sp_raw.split(',') if l.strip())
+
         # Parâmetros PDV
         parametros_pdv_str = request.form.get('parametros_pdv', '').strip()
         if parametros_pdv_str:
@@ -587,6 +598,10 @@ def config():
             props[f'api.{nome}.params']     = request.form.get(f'api_params_{idx}', '').strip()
             props[f'api.{nome}.param_hint'] = request.form.get(f'api_param_hint_{idx}', '').strip()
             props[f'api.{nome}.body']       = request.form.get(f'api_body_{idx}', '').strip()
+            # Headers é multilinha; codifica quebras como "\n" literal p/ caber em 1 linha do .properties
+            headers_raw = request.form.get(f'api_headers_{idx}', '').replace('\r\n', '\n').replace('\r', '\n').strip()
+            props[f'api.{nome}.headers']    = headers_raw.replace('\n', '\\n')
+            props[f'api.{nome}.token_provider'] = request.form.get(f'api_token_provider_{idx}', '').strip()
             apikeys[nome] = request.form.get(f'api_apikey_{idx}', '').strip()
             ordem.append(nome)
         props['api_order'] = ','.join(ordem)
@@ -609,6 +624,7 @@ def config():
         stores_str=','.join(lojas),
         pdvs_dict=pdvs_dict,
         logs_str=','.join(converterParaArray(props.get('logs', ''))),
+        logs_sp_lista='\n'.join(converterParaArray(props.get('logs_sp', ''))),
         emails_destino_lista=emails_destino_lista,
         apis=apis,
         config_props=props,
@@ -651,7 +667,6 @@ def gerar_arquivos_oracle(consultas, loja, pdv, nsu, data, formato, separador, c
     caminhos_com_dados = []
 
     for nome_consulta in consultas:
-        logger.info(f"Processando consulta: {nome_consulta}")
         caminho, linhas = exportar_consulta_para_csv(nome_consulta, loja, pdv, nsu, data, formato, separador)
         if linhas > 0:
             status_consultas.append({'nome': nome_consulta, 'linhas': linhas, 'status': 'ok'})
@@ -682,7 +697,6 @@ def gerar_arquivos_oracle(consultas, loja, pdv, nsu, data, formato, separador, c
 @app.route('/oracle_export/gerar', methods=['POST'])
 def oracle_export_gerar():
     """Gera os arquivos no servidor e retorna os nomes para download pelo navegador/webview."""
-    logger.info("Requisição de geração de exportação Oracle (download) recebida")
     try:
         params = _parametros_oracle_export(request.form)
     except ValueError as e:
@@ -719,7 +733,6 @@ def oracle_export_baixar(nome_arquivo):
 
 @app.route('/oracle_export/email', methods=['POST'])
 def oracle_export_email():
-    logger.info("Requisição de envio por e-mail da exportação Oracle recebida")
     email_destino = request.form.get('email_destino', '').strip()
     if not email_destino:
         return jsonify({'sucesso': False, 'mensagem': 'Selecione um e-mail de destino'}), 400
@@ -919,19 +932,22 @@ def gerar_pid(tamanho=10):
 
 @app.route('/solicitar', methods=['POST'])
 def solicitar():
-    logger.info("Requisição de solicitação de logs recebida")
     props = ler_config_completo()
 
     loja = request.form['loja']
-    pdv = request.form['pdv']
+    pdv = request.form.get('pdv', '')
     logs = request.form.getlist('logs')
     email_destino = request.form['email_destino']
 
-    logger.debug(f"Dados da solicitação - Loja: {loja}, PDV: {pdv}, Email: {email_destino}, Logs: {logs}")
+    logger.info(f"Solicitação de logs [loja={loja} pdv={pdv} email={email_destino} logs={','.join(logs)}]")
 
     pid = gerar_pid()
 
-    if loja == 'server_152':
+    if loja == 'SERVERS_EP_SP':
+        # Logs de servidores extraídos pelo Server Agent SP (sem Loja/PDV no corpo)
+        assunto = f"[Solicitação Log SP] - [{pid}]"
+        corpo = f"PID: {pid}\nDestino: {email_destino}\nLogs: {','.join(logs)}"
+    elif loja == 'server_152':
         assunto = f"[Solicitação linx-webservices] - [{pid}]"
         corpo = f"PID: {pid}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: linx-webservices"
     else:
@@ -954,8 +970,6 @@ def enviar_email_gmail(remetente, senha, destinatario, assunto, corpo):
     msg['Subject'] = assunto
     msg['From'] = remetente
     msg['To'] = remetente
-
-    logger.debug(f"Remetente: {remetente} | Destinatário: {destinatario}")
 
     smtp_server = "smtp.gmail.com"
     smtp_port = 587
@@ -1122,7 +1136,6 @@ def api_tunnel_status():
 
 
 if __name__ == '__main__':
-    logger.info("Iniciando servidor Flask")
     import time, webview
 
     def _iniciar_flask():
@@ -1137,7 +1150,6 @@ if __name__ == '__main__':
     # que o botão "Download" salve arquivos na pasta Downloads do usuário.
     webview.settings['ALLOW_DOWNLOADS'] = True
 
-    logger.info("Abrindo janela da aplicação")
     janela = webview.create_window(
         'Backoffice Equipe QA',
         'http://localhost:5000',

@@ -41,8 +41,30 @@
 
         function atualizaLogs() {
             var logsDiv = document.getElementById("logs");
-            var logs = converterParaArray(config['logs']);
+            var lojaSelecionada = document.getElementById("loja").value;
             logsDiv.innerHTML = '';
+
+            if (lojaSelecionada === 'SERVERS_EP_SP') {
+                // Logs dos servidores EP SP (Server Agent SP): entradas "nome;ip"
+                converterParaArray(config['logs_sp']).forEach(function(item) {
+                    var partes = item.split(';');
+                    var nome = partes[0].trim();
+                    var ip = (partes[1] || '').trim();
+                    if (!nome) return;
+                    var label = document.createElement("label");
+                    if (ip) label.title = "Servidor: " + ip;
+                    var checkbox = document.createElement("input");
+                    checkbox.type = "checkbox";
+                    checkbox.name = "logs";
+                    checkbox.value = nome;
+                    label.appendChild(checkbox);
+                    label.appendChild(document.createTextNode(nome));
+                    logsDiv.appendChild(label);
+                });
+                return;
+            }
+
+            var logs = converterParaArray(config['logs']);
             logs.forEach(function(log) {
                 var label = document.createElement("label");
                 var checkbox = document.createElement("input");
@@ -55,18 +77,28 @@
             });
         }
 
+        function atualizaVisibilidadePdv() {
+            var isSp = document.getElementById("loja").value === 'SERVERS_EP_SP';
+            document.getElementById("pdv-container").style.display = isSp ? 'none' : '';
+            document.getElementById("pdv").required = !isSp;
+        }
+
         function limparCampos() {
             document.getElementById("painel").reset();
             atualizaLogs();
             populaPdvs();
+            atualizaVisibilidadePdv();
         }
 
         document.addEventListener("DOMContentLoaded", function() {
             populaLojas();
             populaPdvs();
             atualizaLogs();
+            atualizaVisibilidadePdv();
             document.getElementById("loja").addEventListener("change", function() {
                 populaPdvs();
+                atualizaLogs();
+                atualizaVisibilidadePdv();
             });
         });
 
@@ -112,6 +144,7 @@
                         form.reset();
                         atualizaLogs();
                         populaPdvs();
+                        atualizaVisibilidadePdv();
                     } else {
                         mostrarAlerta("Erro: " + data.mensagem, "erro");
                     }
@@ -128,8 +161,10 @@
         <label for="loja">Loja:</label>
         <select id="loja" name="loja" required></select>
 
-        <label for="pdv">PDV:</label>
-        <select id="pdv" name="pdv" required></select>
+        <div id="pdv-container">
+            <label for="pdv">PDV:</label>
+            <select id="pdv" name="pdv" required></select>
+        </div>
 
         <label>Arquivos de Logs:</label>
         <div id="logs"></div>

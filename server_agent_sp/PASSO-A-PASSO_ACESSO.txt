@@ -1,0 +1,92 @@
+===========================================================================
+Liberar acesso do agente as pastas de log - SEM gravar senha
+===========================================================================
+
+Conta a autorizar (conta de computador do servidor do agente):
+
+    LMBR\GCPQSPLJ048LER$
+
+Ela e criada e mantida pelo Active Directory, tem a senha girada pelo proprio
+AD e NAO e afetada pela troca diaria do PAM. Concede-se uma vez e nao se mexe
+mais. O cifrao ($) faz parte do nome - nao esqueca dele.
+
+Execute os blocos abaixo EM CADA SERVIDOR DE LOG, num PowerShell como
+Administrador. Sao 4 shares somente-leitura cobrindo os 6 logs.
+
+---------------------------------------------------------------------------
+SERVIDOR 10.56.62.152  (integrador_idb e webservices)
+---------------------------------------------------------------------------
+$conta = 'LMBR\GCPQSPLJ048LER$'
+
+New-SmbShare -Name 'LogsQA_Integrador' -Path 'D:\integrador-idb' -ReadAccess $conta
+icacls 'D:\integrador-idb' /grant "${conta}:(OI)(CI)(RX)" /T
+
+New-SmbShare -Name 'LogsQA_WS' -Path 'D:\linx-wildfly\standalone\data\linx-webservices\logs' -ReadAccess $conta
+icacls 'D:\linx-wildfly\standalone\data\linx-webservices\logs' /grant "${conta}:(OI)(CI)(RX)" /T
+
+---------------------------------------------------------------------------
+SERVIDOR 10.56.62.140  (ProcTrans_CSIDebugFile e lgComandosSQL)
+---------------------------------------------------------------------------
+Uma unica share cobre os dois: lgComandosSQL fica dentro de binProcTrans.
+
+$conta = 'LMBR\GCPQSPLJ048LER$'
+
+New-SmbShare -Name 'LogsQA_ProcTrans' -Path 'D:\p2k\binProcTrans' -ReadAccess $conta
+icacls 'D:\p2k\binProcTrans' /grant "${conta}:(OI)(CI)(RX)" /T
+
+---------------------------------------------------------------------------
+SERVIDOR 10.56.62.139  (csi_ws-safe e csi_safe-retaguarda)
+---------------------------------------------------------------------------
+Uma unica share cobre os dois: ambos ficam sob D:\LINX\CSI.
+
+$conta = 'LMBR\GCPQSPLJ048LER$'
+
+New-SmbShare -Name 'LogsQA_CSI' -Path 'D:\LINX\CSI' -ReadAccess $conta
+icacls 'D:\LINX\CSI' /grant "${conta}:(OI)(CI)(RX)" /T
+
+===========================================================================
+DEPOIS: trocar os caminhos no agent.properties
+===========================================================================
+Substitua as linhas log.*.caminho por estas (os .formato NAO mudam):
+
+log.integrador_idb.caminho=\\10.56.62.152\LogsQA_Integrador
+log.webservices.caminho=\\10.56.62.152\LogsQA_WS
+log.ProcTrans_CSIDebugFile.caminho=\\10.56.62.140\LogsQA_ProcTrans
+log.lgComandosSQL.caminho=\\10.56.62.140\LogsQA_ProcTrans\logTrace\lgComandosSQL
+log.csi_ws-safe.caminho=\\10.56.62.139\LogsQA_CSI\WS-SAFE\logs
+log.csi_safe-retaguarda.caminho=\\10.56.62.139\LogsQA_CSI\LINX-SAFE-RETAGUARDA\Componentes\dll
+
+Depois rode instalar_servico.bat como Administrador e acompanhe
+C:\ServerAgentSP\log\server_agent_sp.log
+
+===========================================================================
+ALTERNATIVA RAPIDA (concede mais acesso do que o necessario)
+===========================================================================
+Em vez das shares, tornar a conta de computador admin local em cada servidor
+de log - isso habilita as shares d$ que ja estao no agent.properties atual,
+sem precisar trocar nenhum caminho:
+
+    net localgroup Administrators LMBR\GCPQSPLJ048LER$ /add
+
+Funciona, mas da acesso administrativo total ao servidor de log. Use so se
+nao for possivel criar as shares somente-leitura.
+
+===========================================================================
+COMO CONFERIR
+===========================================================================
+No servidor do agente, apos conceder o acesso, o teste que vale e o do
+proprio servico (rodar testar_agente.bat a mao usa o SEU usuario, que enxerga
+mais que o servico):
+
+    C:\ServerAgentSP\iniciar_servico.bat
+    type C:\ServerAgentSP\log\server_agent_sp.log
+
+Se aparecer "Arquivo indisponivel (Access is denied)", o acesso da conta de
+computador ainda nao esta valendo. Nesse caso, confira no servidor de log:
+
+    Get-SmbShareAccess -Name 'LogsQA_ProcTrans'
+
+Observacao: apos conceder acesso a uma conta de computador, pode ser
+necessario reiniciar o servidor do agente para que ele obtenha um ticket
+Kerberos novo com a associacao atualizada.
+===========================================================================

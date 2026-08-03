@@ -320,7 +320,6 @@ SECTIONS = [
 
 def pagina_mdm(app, ler_properties, config_file):
     """Retorna a página da aba MDM (Cadastrar/Consultar)."""
-    logger.debug("Página 'MDM' acessada")
     props = ler_properties(config_file)
     schema = props.get('mdm_api_schema', 'lmbr_client_preprod')
     return render_template('mdm.html', sections=SECTIONS, schema=schema, ufs_ie=UFS_IE)
@@ -344,7 +343,6 @@ def consultar_cliente_mdm(app, ler_properties, config_file):
     headers = {'Apikey': apikey, 'Accept': 'application/json'}
 
     try:
-        logger.info(f"Consultando cliente MDM: {identificador}")
         resp = requests.get(url, headers=headers, timeout=30, verify=False)
         retorno = {
             'status_code': resp.status_code,
@@ -376,7 +374,6 @@ def cadastrar_cliente_mdm(app, ler_properties, config_file):
     headers = {'Apikey': apikey, 'Accept': 'application/json', 'Content-Type': 'application/json'}
 
     try:
-        logger.info("Enviando cadastro de cliente para a API MDM")
         resp = requests.post(url, headers=headers, data=payload_json, timeout=30, verify=False)
         retorno = {
             'status_code': resp.status_code,
@@ -417,7 +414,6 @@ def atualizar_cliente_mdm(app, ler_properties, config_file):
     headers = {'Apikey': apikey, 'Accept': 'application/json', 'Content-Type': 'application/json'}
 
     try:
-        logger.info(f"Enviando alteração (PATCH) de cliente MDM: {administrative_identifier}")
         resp = requests.patch(url, headers=headers, data=payload_json, timeout=30, verify=False)
         retorno = {
             'status_code': resp.status_code,

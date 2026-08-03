@@ -21,7 +21,10 @@ OUTPUT_DIR = os.path.join(_BASE_DIR, 'output')
 
 # Campos que compõem uma API. 'apikey' é sensível (secure.properties);
 # os demais ficam em config.properties.
-API_CAMPOS = ('url', 'apikey', 'params', 'param_hint', 'method', 'body')
+#   headers        -> headers extras (um por linha, "Nome: Valor" ou "Nome=Valor")
+#   token_provider -> nome de outra API que gera o token (Authorization Bearer)
+API_CAMPOS = ('url', 'apikey', 'params', 'param_hint', 'method', 'body',
+              'headers', 'token_provider')
 
 
 def obter_apis(props):
@@ -49,6 +52,9 @@ def obter_apis(props):
             api.setdefault(campo, '')
         if not api.get('method'):
             api['method'] = 'GET'
+        # headers é armazenado com quebras de linha codificadas como "\n" literal
+        # (o .properties é linha-a-linha); aqui devolvemos as quebras reais.
+        api['headers'] = (api.get('headers') or '').replace('\\n', '\n')
 
     # Ordem de exibição no combobox: definida em api_order (config); as APIs que
     # não constam na lista vão para o fim, em ordem alfabética.
@@ -65,27 +71,97 @@ def obter_apis(props):
 
 def pagina_requisicao_api(app, ler_properties, config_file):
     """Retorna a página da aba Requisição API"""
-    logger.debug("Página 'Requisição API' acessada")
     props = ler_properties(config_file)
     apis = obter_apis(props)
     return render_template('requisicao_api.html', apis=apis, config_props=props)
 
 
+def _parse_headers(texto):
+    """Converte headers multi-linha ('Nome: Valor' ou 'Nome=Valor', um por linha)
+    em dict. Usa o primeiro ':' ou '=' de cada linha como separador, preservando
+    ':' e '=' no restante do valor (ex.: 'Authorization: Basic xxx==',
+    'Cookie=PF=abc'). Um header por linha evita conflito com ';' de cookies."""
+    headers = {}
+    for linha in (texto or '').splitlines():
+        linha = linha.strip()
+        if not linha:
+            continue
+        posicoes = [p for p in (linha.find(':'), linha.find('=')) if p != -1]
+        if not posicoes:
+            continue
+        i = min(posicoes)
+        chave = linha[:i].strip()
+        valor = linha[i + 1:].strip()
+        if chave:
+            headers[chave] = valor
+    return headers
+
+
 def _montar_headers(api):
-    """Monta os headers da chamada a partir da API configurada."""
+    """Monta os headers da chamada a partir da API configurada.
+
+    Ordem de precedência (do menor para o maior): defaults (Accept/Content-Type)
+    < Apikey < headers configurados. O Authorization via token (quando houver API
+    geradora) é aplicado depois, em fazer_requisicao_api, e sobrepõe estes."""
     headers = {'Accept': 'application/json'}
+    metodo = (api.get('method') or 'GET').strip().upper()
+    if metodo != 'GET':
+        headers['Content-Type'] = 'application/json'
     apikey = (api.get('apikey') or '').strip()
     if apikey:
         headers['Apikey'] = apikey
-    metodo = (api.get('method') or 'GET').strip().upper()
-    if metodo != 'GET':
-        headers.setdefault('Content-Type', 'application/json')
+    headers.update(_parse_headers(api.get('headers', '')))
     return headers
+
+
+def _extrair_token(response):
+    """Extrai o valor do Authorization a partir da resposta da API geradora de token.
+    Suporta JSON OAuth (access_token/token/id_token + token_type opcional) e também
+    token 'cru' no corpo da resposta."""
+    try:
+        dados = response.json()
+    except Exception:
+        dados = None
+    if isinstance(dados, dict):
+        for campo in ('access_token', 'accessToken', 'token', 'id_token', 'idToken'):
+            valor = dados.get(campo)
+            if valor:
+                tipo = (dados.get('token_type') or 'Bearer').strip() or 'Bearer'
+                return f"{tipo} {valor}"
+    auth = response.headers.get('Authorization')
+    if auth:
+        return auth
+    txt = (response.text or '').strip()
+    if txt and len(txt) < 4000 and '\n' not in txt and ' ' not in txt:
+        return f"Bearer {txt}"
+    return ''
+
+
+def _obter_token(provider):
+    """Executa a API geradora de token e devolve (authorization, erro)."""
+    url = (provider.get('url') or '').strip()
+    if not url:
+        return '', 'URL da API geradora de token não configurada.'
+    url += (provider.get('params') or '').strip()
+    metodo = (provider.get('method') or 'POST').strip().upper()
+    headers = _montar_headers(provider)
+    body = provider.get('body') or ''
+    dados = None if metodo == 'GET' else (body if body.strip() else '')
+    logger.debug(f"Gerando token via {provider.get('nome')} [{metodo}] {url}")
+    try:
+        resp = requests.request(metodo, url, headers=headers, data=dados, timeout=30, verify=False)
+    except Exception as e:
+        return '', f'Erro ao chamar a API de token: {str(e)}'
+    if resp.status_code >= 400:
+        return '', f'API de token retornou status {resp.status_code}.'
+    auth = _extrair_token(resp)
+    if not auth:
+        return '', 'Não foi possível extrair o token da resposta da API geradora.'
+    return auth, ''
 
 
 def fazer_requisicao_api(app, ler_properties, config_file):
     """Faz a chamada à API selecionada, para qualquer método HTTP."""
-    logger.info("Requisição API recebida")
     props = ler_properties(config_file)
     apis = obter_apis(props)
 
@@ -109,6 +185,19 @@ def fazer_requisicao_api(app, ler_properties, config_file):
     # O parâmetro é concatenado diretamente à URL (aceita path "/123" ou query "?id=1")
     url_final = url_base + param_tela
     headers = _montar_headers(api)
+
+    # Encadeamento de token: se a API indicar uma API geradora, gera o token e
+    # sobrepõe o Authorization antes de fazer a consulta.
+    provider_nome = (api.get('token_provider') or '').strip()
+    if provider_nome:
+        provider = next((a for a in apis if a['nome'] == provider_nome), None)
+        if not provider:
+            return jsonify({'sucesso': False, 'mensagem': f'API geradora de token "{provider_nome}" não encontrada.'}), 400
+        auth, erro = _obter_token(provider)
+        if erro:
+            return jsonify({'sucesso': False, 'mensagem': f'[Token via {provider_nome}] {erro}'}), 502
+        headers['Authorization'] = auth
+        logger.info(f"Token obtido via {provider_nome} para a chamada de {nome_api}")
 
     # GET nunca envia body
     dados = None if metodo == 'GET' else (body if body.strip() else None)
@@ -157,7 +246,6 @@ def _gravar_retorno_arquivo(nome_api, conteudo):
 
 def gerar_retorno_download(app, ler_properties, config_file):
     """Grava o retorno recebido em um arquivo e devolve o nome para download."""
-    logger.info("Requisição para gerar arquivo de retorno da API")
     retorno = request.form.get('retorno', '')
     nome_api = request.form.get('api', '').strip()
 
@@ -186,7 +274,6 @@ def baixar_retorno(app, nome_arquivo):
 
 def enviar_retorno_email(app, ler_properties, config_file, gerar_pid, enviar_email_com_anexos):
     """Envia o retorno da API por e-mail, anexando o conteúdo como arquivo."""
-    logger.info("Requisição de envio do retorno da API por e-mail")
     props = ler_properties(config_file)
 
     retorno = request.form.get('retorno', '')

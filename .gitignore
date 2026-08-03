@@ -20,6 +20,13 @@ server_agent/nssm.exe
 server_agent/AgentExtratarLog
 server_agent/agent_extrator_log.spec
 
+# Binários e saídas do agente SP
+server_agent_sp/*.exe
+server_agent_sp/nssm.exe
+server_agent_sp/server_agent_sp.spec
+server_agent_sp/historico_envio_logs.csv
+server_agent_sp/LOG-SP-*.zip
+
 # Dados em static/data: ignora tudo, exceto as bases oficiais versionadas
 # (endereços/CEPs e CNAEs), que a aplicação usa para geração automática
 static/data/*

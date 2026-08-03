@@ -343,6 +343,22 @@
                 if (btUp) btUp.disabled = (idx === 0);
                 if (btDown) btDown.disabled = (idx === blocos.length - 1);
             });
+            atualizarProviders();
+        }
+
+        function atualizarProviders() {
+            const nomes = Array.from(document.querySelectorAll('#apis-container input[name^="api_nome_"]'))
+                .map(i => i.value.trim()).filter(Boolean);
+            document.querySelectorAll('#apis-container select[name^="api_token_provider_"]').forEach(sel => {
+                const selfName = sel.closest('.api-bloco').querySelector('input[name^="api_nome_"]').value.trim();
+                const atual = sel.value || sel.dataset.saved || '';
+                let opts = '<option value="">(nenhuma)</option>';
+                nomes.forEach(n => {
+                    if (n === selfName) return;
+                    opts += '<option value="' + escaparHtml(n) + '"' + (n === atual ? ' selected' : '') + '>' + escaparHtml(n) + '</option>';
+                });
+                sel.innerHTML = opts;
+            });
         }
 
         function alternarApikey(botao) {
@@ -388,6 +404,11 @@
                     </div>
                     <small>Enviada no header <code>Apikey</code>. Salva em <code>secure.properties</code>.</small>
                 </div>
+                <div class="field-group">
+                    <label>Headers</label>
+                    <textarea name="api_headers_${idx}" rows="3" placeholder="Um por linha. Ex:&#10;Authorization: Basic MFI...&#10;x-adeo-bu-id: 7&#10;Content-Type: application/json">${escaparHtml(api.headers)}</textarea>
+                    <small>Headers extras enviados na requisição — um por linha (<code>Nome: Valor</code> ou <code>Nome=Valor</code>).</small>
+                </div>
                 <div class="grid-2">
                     <div class="field-group">
                         <label>Parâmetro</label>
@@ -400,9 +421,16 @@
                         <small>Exibida como dica dentro do campo Parâmetro.</small>
                     </div>
                 </div>
-                <div class="field-group">
-                    <label>Body padrão</label>
-                    <textarea name="api_body_${idx}" rows="4" placeholder="Corpo padrão (JSON, XML...). Ignorado em métodos GET.">${escaparHtml(api.body)}</textarea>
+                <div class="grid-2">
+                    <div class="field-group">
+                        <label>Body padrão</label>
+                        <textarea name="api_body_${idx}" rows="4" placeholder="Corpo padrão (JSON, XML...). Ignorado em métodos GET.">${escaparHtml(api.body)}</textarea>
+                    </div>
+                    <div class="field-group">
+                        <label>API geradora de token</label>
+                        <select name="api_token_provider_${idx}" data-saved="${escaparHtml(api.token_provider)}"></select>
+                        <small>Se definida, a funcionalidade chama esta API antes, extrai o token e o injeta no <code>Authorization: Bearer</code> desta requisição.</small>
+                    </div>
                 </div>
                 <button type="button" class="btn-danger" onclick="removerApi(this)">Remover API</button>
             `;
@@ -592,6 +620,13 @@
                 <h4>Logs disponíveis para solicitação</h4>
                 <small>Separados por vírgula.</small>
                 <input type="text" name="logs" value="{{ logs_str }}">
+            </div>
+
+            <!-- Logs SP -->
+            <div class="card">
+                <h4>Logs SP — Server Agent SP (loja SERVERS_EP_SP)</h4>
+                <small>Logs extraídos pelo Server Agent SP quando a loja <strong>SERVERS_EP_SP</strong> é selecionada em Solicitar Logs. Um por linha, no formato <code>nome;ip</code> — o ip do servidor aparece como dica (hint) no checkbox. O nome deve corresponder ao <code>log.&lt;nome&gt;.caminho</code> do <code>agent.properties</code> do agente.</small>
+                <textarea name="logs_sp" rows="7" style="margin-top:8px">{{ logs_sp_lista }}</textarea>
             </div>
 
             <!-- Parâmetros PDV -->
