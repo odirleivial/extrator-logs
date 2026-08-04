@@ -318,20 +318,114 @@ def ler_status_online(base_pdv, props):
         return 'N/D', 'N/D'
 
 # ---------------------------------------------------------------------------
+# Logs históricos (dias anteriores)
+# ---------------------------------------------------------------------------
+# Configuração no agent.properties:
+#   historico.<log>.caminho = pasta base no PDV
+#   historico.<log>.formato = nome do arquivo/pasta com tokens
+#   historico.<log>.tipo    = arquivo | pasta
+#
+# Tokens do formato: [..] formato de data | (..) variável LOJA/PDV | {..} texto
+# fixo. O texto fora dos delimitadores também é literal.
+_RE_TOKEN_FORMATO = re.compile(r'\[([^\]]*)\]|\(([^)]*)\)|\{([^}]*)\}')
+_RE_TOKEN_SO_DATA = re.compile(r'^[ymdhs\-_/.: ]+$')
+
+def _token_eh_data(conteudo):
+    """True quando o token representa um formato de data — só contém marcadores
+    de data e separadores. A classificação é pelo conteúdo e não pelo tipo de
+    delimitador, para tolerar [..] e {..} trocados na configuração."""
+    c = conteudo.lower()
+    return bool(c) and bool(_RE_TOKEN_SO_DATA.match(c)) and bool(re.search(r'[ymd]', c))
+
+def _formatar_token_data(conteudo, data):
+    """Converte um formato tipo 'yyyy-mm-dd' para a data informada."""
+    s = conteudo.replace('yyyy', '%Y').replace('yy', '%y')
+    s = s.replace('mm', '%m').replace('dd', '%d')
+    s = s.replace('hh', '%H').replace('ss', '%S')
+    return data.strftime(s)
+
+def _resolver_formato(formato, data, loja, pdv):
+    """Resolve o formato do nome de arquivo/pasta histórico para uma data.
+    Ex.: '{MFDE}(LOJA)(PDV)[yyyymmdd].zip' -> 'MFDE004545020260802.zip'"""
+    partes = []
+    pos = 0
+    for m in _RE_TOKEN_FORMATO.finditer(formato):
+        partes.append(formato[pos:m.start()])
+        conteudo = next(g for g in m.groups() if g is not None)
+        chave = conteudo.strip().upper()
+        if chave == 'LOJA':
+            partes.append(loja)
+        elif chave == 'PDV':
+            partes.append(pdv)
+        elif _token_eh_data(conteudo):
+            partes.append(_formatar_token_data(conteudo, data))
+        else:
+            partes.append(conteudo)
+        pos = m.end()
+    partes.append(formato[pos:])
+    return ''.join(partes)
+
+def _resolver_log_historico(log_item, props, data, loja, pdv, base_pdv):
+    """Monta o caminho do log de um dia anterior.
+    Retorna (caminho_absoluto, caminho_relativo, tipo) ou (None, None, None)
+    quando o log não tem configuração de histórico no properties."""
+    base    = props.get(f'historico.{log_item}.caminho', '')
+    formato = props.get(f'historico.{log_item}.formato', '')
+    tipo    = props.get(f'historico.{log_item}.tipo', 'arquivo').strip().lower()
+    if not base or not formato:
+        return None, None, None
+
+    nome = _resolver_formato(formato, data, loja.zfill(4), pdv.zfill(3))
+    caminho_relativo = os.path.join(base.rstrip('\\/'), nome)
+    if base_pdv:
+        caminho_absoluto = os.path.join(f'\\\\{base_pdv}\\C$', caminho_relativo.strip(':\\'))
+    else:
+        caminho_absoluto = caminho_relativo
+    return caminho_absoluto, caminho_relativo, tipo
+
+def _parsear_data_solicitacao(texto):
+    """Converte o campo 'Data' do e-mail em date. Retorna None se ausente/inválida."""
+    texto = (texto or '').strip()
+    if not texto:
+        return None
+    for fmt in ('%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y', '%d/%m/%y'):
+        try:
+            return datetime.strptime(texto, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+# ---------------------------------------------------------------------------
 # Funcionalidade 1: Solicitação de Logs
 # ---------------------------------------------------------------------------
 def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
-    pid     = extrair_campo(corpo, 'PID')
-    destino = extrair_campo(corpo, 'Destino')
-    loja    = extrair_campo(corpo, 'Loja')
-    pdv     = extrair_campo(corpo, 'PDV')
-    logs    = extrair_campo(corpo, 'Logs')
+    pid      = extrair_campo(corpo, 'PID')
+    destino  = extrair_campo(corpo, 'Destino')
+    loja     = extrair_campo(corpo, 'Loja')
+    pdv      = extrair_campo(corpo, 'PDV')
+    logs     = extrair_campo(corpo, 'Logs')
+    data_txt = extrair_campo(corpo, 'Data')
 
-    log(f'[SolicitacaoLog] PID={pid} | Loja={loja} | PDV={pdv} | Logs={logs}')
+    # Data de referência: quando anterior à data atual, os logs vêm dos arquivos
+    # históricos (configuração historico.<log>.*); caso contrário, do dia corrente.
+    hoje      = datetime.now().date()
+    data_ref  = _parsear_data_solicitacao(data_txt)
+    if data_ref and data_ref > hoje:
+        log(f'Data solicitada ({data_ref:%d/%m/%Y}) é futura — usando os logs do dia atual.', 'warning')
+        data_ref = None
+    historico = data_ref is not None and data_ref < hoje
+    data_logs = data_ref or hoje
+
+    log(f'[SolicitacaoLog] PID={pid} | Loja={loja} | PDV={pdv} | Logs={logs} | '
+        f'Data={data_logs:%d/%m/%Y} ({"histórico" if historico else "dia atual"})')
 
     data_atual    = datetime.now().strftime('%d%m%Y%H%M%S')
     agora_fmt     = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
-    nome_zip      = f'LOG-{loja}-{pdv}-{data_atual}.zip'
+    data_logs_fmt = data_logs.strftime('%d/%m/%Y')
+    if historico:
+        nome_zip = f'LOG-{loja}-{pdv}-HIST{data_logs:%Y%m%d}-{data_atual}.zip'
+    else:
+        nome_zip = f'LOG-{loja}-{pdv}-{data_atual}.zip'
     nome_zip_path = os.path.join(BASE_DIR, nome_zip)
     status_envio  = 'Sucesso'
     erro_msg      = ''
@@ -354,42 +448,79 @@ def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
 
         lista_logs = [l.strip() for l in logs.split(',') if l.strip()]
         caminhos_arquivos = []
+        # Pastas a compactar, deduplicadas: quando vários logs apontam para a
+        # mesma pasta, ela entra no zip uma única vez.
+        pastas_a_compactar = {}
 
         for log_item in lista_logs:
-            caminho_relativo = props.get(log_item)
-            if not caminho_relativo:
-                log(f'Aviso: caminho do log "{log_item}" não encontrado no properties.', 'warning')
-                arquivos_status.append({'nome': log_item, 'caminho': '—', 'status': 'sem_config'})
+            if historico:
+                caminho_absoluto, caminho_relativo, tipo = _resolver_log_historico(
+                    log_item, props, data_ref, loja, pdv, base_pdv)
+                if not caminho_absoluto:
+                    log(f'Aviso: log "{log_item}" sem configuração de histórico no properties.', 'warning')
+                    arquivos_status.append({'nome': log_item, 'caminho': '—', 'status': 'sem_config'})
+                    continue
+            else:
+                tipo = 'arquivo'
+                caminho_relativo = props.get(log_item)
+                if not caminho_relativo:
+                    log(f'Aviso: caminho do log "{log_item}" não encontrado no properties.', 'warning')
+                    arquivos_status.append({'nome': log_item, 'caminho': '—', 'status': 'sem_config'})
+                    continue
+
+                if log_item.strip().upper() == 'MFDE':
+                    loja_fmt  = loja.zfill(4)
+                    pdv_fmt   = pdv.zfill(3)
+                    nome_mfde = f"MFDE{loja_fmt}{pdv_fmt}{datetime.now().strftime('%Y%m%d')}"
+                    base_mfde = props.get('MFDE', 'Logs')
+                    caminho_absoluto = os.path.join(f'\\\\{base_pdv}\\C$', base_mfde, nome_mfde) if base_pdv else os.path.join(base_mfde, nome_mfde)
+                else:
+                    caminho_absoluto = os.path.join(f'\\\\{base_pdv}\\C$', caminho_relativo.strip(':\\')) if base_pdv else caminho_relativo
+
+            prefixo = '[Histórico] ' if historico else ''
+            log(f'{prefixo}{"Pasta" if tipo == "pasta" else "Arquivo"} {log_item} -> {caminho_absoluto}')
+
+            existe = os.path.isdir(caminho_absoluto) if tipo == 'pasta' else os.path.isfile(caminho_absoluto)
+            if not existe:
+                log(f'Aviso: {"pasta" if tipo == "pasta" else "arquivo"} não encontrado: {caminho_absoluto}', 'warning')
+                arquivos_status.append({'nome': log_item, 'caminho': caminho_relativo, 'status': 'nao_encontrado'})
                 continue
 
-            if log_item.strip().upper() == 'MFDE':
-                loja_fmt  = loja.zfill(4)
-                pdv_fmt   = pdv.zfill(3)
-                nome_mfde = f"MFDE{loja_fmt}{pdv_fmt}{datetime.now().strftime('%Y%m%d')}"
-                base_mfde = props.get('MFDE', 'Logs')
-                caminho_absoluto = os.path.join(f'\\\\{base_pdv}\\C$', base_mfde, nome_mfde) if base_pdv else os.path.join(base_mfde, nome_mfde)
+            if tipo == 'pasta':
+                chave = os.path.normcase(os.path.normpath(caminho_absoluto))
+                if chave in pastas_a_compactar:
+                    log(f'Pasta já incluída por outro log — não será compactada novamente: {caminho_absoluto}')
+                else:
+                    pastas_a_compactar[chave] = caminho_absoluto
             else:
-                caminho_absoluto = os.path.join(f'\\\\{base_pdv}\\C$', caminho_relativo.strip(':\\')) if base_pdv else caminho_relativo
-
-            log(f'Arquivo {log_item} -> {caminho_absoluto}')
-            if os.path.exists(caminho_absoluto):
                 caminhos_arquivos.append(caminho_absoluto)
-                arquivos_status.append({'nome': log_item, 'caminho': caminho_relativo, 'status': 'ok'})
-            else:
-                log(f'Aviso: arquivo não encontrado: {caminho_absoluto}', 'warning')
-                arquivos_status.append({'nome': log_item, 'caminho': caminho_relativo, 'status': 'nao_encontrado'})
+            arquivos_status.append({'nome': log_item, 'caminho': caminho_relativo, 'status': 'ok'})
 
-        if not caminhos_arquivos:
+        if not caminhos_arquivos and not pastas_a_compactar:
             raise FileNotFoundError('Nenhum arquivo válido para compactar.')
 
         with zipfile.ZipFile(nome_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
             for arquivo in caminhos_arquivos:
                 zipf.write(arquivo, arcname=os.path.basename(arquivo))
+            for caminho_pasta in pastas_a_compactar.values():
+                raiz = os.path.basename(caminho_pasta.rstrip('\\/')) or 'pasta'
+                for dirpath, _, nomes in os.walk(caminho_pasta):
+                    for nome_arq in nomes:
+                        completo = os.path.join(dirpath, nome_arq)
+                        rel      = os.path.relpath(completo, caminho_pasta)
+                        zipf.write(completo, arcname=os.path.join(raiz, rel))
+                log(f'Pasta compactada no anexo: {caminho_pasta} -> {raiz}/')
 
         n_ok    = sum(1 for a in arquivos_status if a['status'] == 'ok')
         n_erro  = len(arquivos_status) - n_ok
 
         # ---- HTML do e-mail ----
+        # O card de data fica destacado em âmbar quando os logs são de um dia anterior
+        if historico:
+            bg_data, cor_data, rotulo_data = '#fef3c7', '#92400e', 'Data (histórico)'
+        else:
+            bg_data, cor_data, rotulo_data = '#f8fafc', '#1e3a5f', 'Data'
+
         linhas_html = ''
         linhas_txt  = ''
         for a in arquivos_status:
@@ -427,22 +558,27 @@ def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
   <tr><td style='padding:20px 28px 0'>
     <table cellpadding='0' cellspacing='0' width='100%'>
       <tr>
-        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:20%'>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:14%'>
           <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>Loja</p>
           <p style='margin:4px 0 0;font-size:18px;font-weight:bold;color:#1e3a5f'>{loja}</p>
         </td>
         <td width='8'></td>
-        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:16%'>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:12%'>
           <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>PDV</p>
           <p style='margin:4px 0 0;font-size:18px;font-weight:bold;color:#1e3a5f'>{pdv}</p>
         </td>
         <td width='8'></td>
-        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:26%'>
+        <td style='padding:8px 12px;background:{bg_data};border-radius:6px;text-align:center;width:26%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>{rotulo_data}</p>
+          <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:{cor_data}'>{data_logs_fmt}</p>
+        </td>
+        <td width='8'></td>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:20%'>
           <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>Versão</p>
           <p style='margin:4px 0 0;font-size:13px;font-weight:bold;color:#1e3a5f;font-family:monospace'>{versao}</p>
         </td>
         <td width='8'></td>
-        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:30%'>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:24%'>
           <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>PID</p>
           <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:#1e3a5f;font-family:monospace'>{pid}</p>
         </td>
@@ -500,6 +636,8 @@ def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
         corpo_txt = (
             f"Solicitação de Logs\n"
             f"PID: {pid} | Loja: {loja} | PDV: {pdv}\n"
+            f"Data dos logs: {data_logs_fmt}"
+            f"{' (histórico)' if historico else ''}\n"
             f"Resumo: {n_ok} incluído(s) | {n_erro} não encontrado(s)\n"
             f"Anexo: {nome_zip}\n"
             f"{'=' * 60}"

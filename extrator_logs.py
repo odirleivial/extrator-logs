@@ -939,20 +939,30 @@ def solicitar():
     logs = request.form.getlist('logs')
     email_destino = request.form['email_destino']
 
-    logger.info(f"Solicitação de logs [loja={loja} pdv={pdv} email={email_destino} logs={','.join(logs)}]")
+    # Data dos logs (campo do formulário em yyyy-mm-dd) — vai como dd/mm/yyyy no corpo
+    try:
+        data_obj = datetime.strptime(request.form.get('data', '').strip(), '%Y-%m-%d')
+    except ValueError:
+        data_obj = datetime.now()
+    if data_obj.date() > datetime.now().date():
+        logger.warning(f"Solicitação recusada: data futura ({data_obj.strftime('%d/%m/%Y')})")
+        return jsonify({'sucesso': False, 'mensagem': 'A data dos logs não pode ser futura.'}), 400
+    data_logs = data_obj.strftime('%d/%m/%Y')
+
+    logger.info(f"Solicitação de logs [loja={loja} pdv={pdv} email={email_destino} data={data_logs} logs={','.join(logs)}]")
 
     pid = gerar_pid()
 
     if loja == 'SERVERS_EP_SP':
         # Logs de servidores extraídos pelo Server Agent SP (sem Loja/PDV no corpo)
         assunto = f"[Solicitação Log SP] - [{pid}]"
-        corpo = f"PID: {pid}\nDestino: {email_destino}\nLogs: {','.join(logs)}"
+        corpo = f"PID: {pid}\nDestino: {email_destino}\nLogs: {','.join(logs)}\nData: {data_logs}"
     elif loja == 'server_152':
         assunto = f"[Solicitação linx-webservices] - [{pid}]"
-        corpo = f"PID: {pid}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: linx-webservices"
+        corpo = f"PID: {pid}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: linx-webservices\nData: {data_logs}"
     else:
         assunto = f"[Solicitação Log] - [{pid}]"
-        corpo = f"PID: {pid}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: {', '.join(logs)}"
+        corpo = f"PID: {pid}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: {', '.join(logs)}\nData: {data_logs}"
 
     try:
         remetente = props.get('email_envio', '')

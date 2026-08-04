@@ -10,7 +10,7 @@
 
 $ErrorActionPreference = 'Continue'
 
-$AGENT_VERSION   = '2.0.0'
+$AGENT_VERSION   = '2.1.0'
 $ASSUNTO_GATILHO = 'Log SP'   # casa com "[Solicitação Log SP]" sem depender de acentuacao
 
 if ($PSScriptRoot) { $BASE_DIR = $PSScriptRoot } else { $BASE_DIR = (Get-Location).Path }
@@ -202,6 +202,8 @@ function Resolver-TokensData {
         elseif ($t2 -eq 'yy')   { $resultado += $Data.ToString('yy');   $i += 2 }
         elseif ($t2 -eq 'mm')   { $resultado += $Data.ToString('MM');   $i += 2 }
         elseif ($t2 -eq 'dd')   { $resultado += $Data.ToString('dd');   $i += 2 }
+        elseif ($t2 -eq 'hh')   { $resultado += $Data.ToString('HH');   $i += 2 }
+        elseif ($t2 -eq 'ss')   { $resultado += $Data.ToString('ss');   $i += 2 }
         else                    { $resultado += $Tokens[$i];            $i += 1 }
     }
     return $resultado
@@ -302,6 +304,171 @@ function Parsear-Data {
     return $null
 }
 
+function Definir-DataReferencia {
+    <#  Decide, a partir do campo "Data:" do e-mail, se a extracao e do dia
+        atual ou de um dia anterior (historico). Data ausente, invalida ou
+        futura cai no dia atual.  #>
+    param([string]$Texto)
+
+    $hoje    = (Get-Date).Date
+    $dataRef = $null
+    if ($Texto) {
+        $dataRef = Parsear-Data $Texto
+        if (-not $dataRef) {
+            Escrever-Log "Campo Data '$Texto' invalido - usando a data atual" 'WARN'
+        } elseif ($dataRef.Date -gt $hoje) {
+            Escrever-Log "Data solicitada ($($dataRef.ToString('dd/MM/yyyy'))) e futura - usando os logs do dia atual" 'WARN'
+            $dataRef = $null
+        }
+    }
+
+    $historico = ($dataRef -ne $null) -and ($dataRef.Date -lt $hoje)
+    if (-not $dataRef) { $dataRef = Get-Date }
+    return [pscustomobject]@{ Data = $dataRef; Historico = $historico }
+}
+
+# ---------------------------------------------------------------------------
+# Logs historicos (dias anteriores)
+#
+# Configuracao no agent.properties:
+#   historico.<log>.caminho = pasta base onde o arquivo/pasta do dia fica
+#   historico.<log>.formato = nomenclatura do arquivo ou da pasta
+#   historico.<log>.tipo    = arquivo | pasta
+#
+# Tokens do formato: [..] e {..} -> data quando o conteudo so tem marcadores de
+# data, senao texto fixo; (LOJA)/(PDV) -> variaveis da solicitacao; (xxx) ->
+# curinga, casa com qualquer texto. Texto fora dos delimitadores e literal.
+# ---------------------------------------------------------------------------
+$RE_TOKEN_FORMATO = [regex]'\[([^\]]*)\]|\(([^)]*)\)|\{([^}]*)\}'
+$RE_TOKEN_SO_DATA = [regex]'^[ymdhs\-_/.: ]+$'
+
+function Token-EhData {
+    <#  Classifica o token pelo CONTEUDO e nao pelo delimitador, para tolerar
+        [..] e {..} trocados na configuracao: '[yyyymmdd]' e '{yyyymmdd}' sao
+        ambos data, '{lgComandosSQL_}' e '[lgComandosSQL_]' sao ambos fixos.  #>
+    param([string]$Conteudo)
+    $c = $Conteudo.ToLower()
+    return ($c -ne '' -and $RE_TOKEN_SO_DATA.IsMatch($c) -and $c -match '[ymd]')
+}
+
+function Resolver-FormatoHistorico {
+    <#  Resolve o formato para o nome (ou padrao com curinga) do dia informado.
+        Ex.: '{lgComandosSQL_}[yyyymmdd].txt'      -> 'lgComandosSQL_20260803.txt'
+             '{linx-webservices_}[yyyy-mm-dd](xxx).zip' -> 'linx-webservices_2026-08-03*.zip'  #>
+    param([string]$Formato, [datetime]$Data, [string]$Loja = '', [string]$Pdv = '')
+
+    $resultado = ''
+    $pos = 0
+    foreach ($m in $RE_TOKEN_FORMATO.Matches($Formato)) {
+        $resultado += $Formato.Substring($pos, $m.Index - $pos)
+        $conteudo = ''
+        foreach ($g in 1, 2, 3) {
+            if ($m.Groups[$g].Success) { $conteudo = $m.Groups[$g].Value; break }
+        }
+        $chave = $conteudo.Trim().ToUpper()
+        if     ($chave -eq 'LOJA') { $resultado += $Loja }
+        elseif ($chave -eq 'PDV')  { $resultado += $Pdv }
+        elseif ($chave -eq 'XXX')  { $resultado += '*' }
+        elseif (Token-EhData $conteudo) { $resultado += (Resolver-TokensData $conteudo $Data) }
+        else   { $resultado += $conteudo }
+        $pos = $m.Index + $m.Length
+    }
+    $resultado += $Formato.Substring($pos)
+    return $resultado
+}
+
+function Localizar-Itens {
+    <#  Devolve os arquivos (ou pastas) que casam com o padrao dentro da base.
+        Com curinga pode retornar mais de um item — e o caso dos logs que o
+        servidor rotaciona varias vezes no mesmo dia (.0, .1, .2).  #>
+    param([string]$Base, [string]$Padrao, [string]$Tipo, [ref]$Motivo)
+
+    $ehPasta = ($Tipo -eq 'pasta')
+    try {
+        if ($Padrao.Contains('*')) {
+            # -Filter faz a filtragem no servidor (rapido em pasta grande) e o
+            # -like depois corrige as folgas do matching estilo 8.3 do -Filter.
+            $itens = @(Get-ChildItem -LiteralPath $Base -Filter $Padrao -Force -ErrorAction Stop |
+                       Where-Object { $_.PSIsContainer -eq $ehPasta -and $_.Name -like $Padrao })
+        } else {
+            $itens = @()
+            $completo = Join-Path $Base $Padrao
+            if (Test-Path -LiteralPath $completo -ErrorAction Stop) {
+                $item = Get-Item -LiteralPath $completo -Force -ErrorAction Stop
+                $itens = @($item | Where-Object { $_.PSIsContainer -eq $ehPasta })
+            }
+        }
+    } catch {
+        $Motivo.Value = $_.Exception.Message
+        return @()
+    }
+
+    if ($itens.Count -eq 0) {
+        $Motivo.Value = if ($ehPasta) { 'pasta nao encontrada' } else { 'arquivo nao encontrado' }
+    }
+    return $itens
+}
+
+function Descrever-Itens {
+    <# Texto do que foi coletado, para a coluna "Arquivo" do e-mail. #>
+    param($Itens, [string]$Base)
+    if ($Itens.Count -eq 1) { return $Itens[0].FullName }
+    $nomes = ($Itens | ForEach-Object { $_.Name }) -join ', '
+    return "$Base\ ($($Itens.Count) arquivos: $nomes)"
+}
+
+function Copiar-Pastas {
+    <#  Copia as pastas para a area de montagem do zip. A mesma pasta nao e
+        copiada duas vezes: quando outro log ja a incluiu, apenas registra.  #>
+    param($Itens, [string]$Staging, [hashtable]$Incluidas)
+
+    $descricoes = @()
+    foreach ($pasta in $Itens) {
+        $chave = $pasta.FullName.TrimEnd('\').ToLower()
+        if ($Incluidas.ContainsKey($chave)) {
+            Escrever-Log "Pasta ja incluida por outro log - nao sera compactada de novo: $($pasta.FullName)"
+            $descricoes += "$($pasta.FullName) (ja no anexo em $($Incluidas[$chave])/)"
+            continue
+        }
+
+        # Pastas de logs diferentes costumam ter o mesmo nome (todas sao a data),
+        # entao desempata com sufixo numerico dentro do zip.
+        $nomeDest = $pasta.Name
+        $n = 2
+        while (Test-Path -LiteralPath (Join-Path $Staging $nomeDest)) {
+            $nomeDest = "$($pasta.Name)_$n"
+            $n++
+        }
+
+        $destino = Join-Path $Staging $nomeDest
+        Copy-Item -LiteralPath $pasta.FullName -Destination $destino -Recurse -Force -ErrorAction Stop
+        $qtd = @(Get-ChildItem -LiteralPath $destino -Recurse -File -Force -ErrorAction SilentlyContinue).Count
+        Escrever-Log "Pasta incluida no anexo: $($pasta.FullName) -> $nomeDest/ ($qtd arquivo(s))"
+        $Incluidas[$chave] = $nomeDest
+        $descricoes += $pasta.FullName
+    }
+    return ($descricoes -join ' | ')
+}
+
+function Resolver-LogHistorico {
+    <#  Le a configuracao historico.<log>.* e localiza os itens do dia pedido.
+        Retorna $null quando o log nao tem configuracao de historico.  #>
+    param([string]$Log, $Props, [datetime]$Data)
+
+    $base    = $Props["historico.$Log.caminho"]
+    $formato = $Props["historico.$Log.formato"]
+    if (-not $base -or -not $formato) { return $null }
+
+    $tipo = $Props["historico.$Log.tipo"]
+    if (-not $tipo) { $tipo = 'arquivo' }
+
+    return [pscustomobject]@{
+        Base   = $base.TrimEnd('\', '/')
+        Tipo   = $tipo.Trim().ToLower()
+        Padrao = Resolver-FormatoHistorico $formato $Data
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Cliente IMAP (TLS via SslStream, leitura em bytes para respeitar literais)
 # ---------------------------------------------------------------------------
@@ -393,10 +560,17 @@ function Enviar-Email {
 # Montagem do HTML do e-mail de resposta
 # ---------------------------------------------------------------------------
 function Montar-HtmlResultado {
-    param($Pid_, $DataRefFmt, $AgoraFmt, $NomeZip, $Arquivos, $Versao)
+    param($Pid_, $DataRefFmt, $AgoraFmt, $NomeZip, $Arquivos, $Versao, [bool]$Historico = $false)
 
     $nOk   = @($Arquivos | Where-Object { $_.status -eq 'ok' }).Count
     $nErro = $Arquivos.Count - $nOk
+
+    # O card da data fica em ambar quando os logs sao de um dia anterior
+    if ($Historico) {
+        $bgData = '#fef3c7'; $corData = '#92400e'; $rotuloData = 'Data (hist&oacute;rico)'
+    } else {
+        $bgData = '#f8fafc'; $corData = '#1e3a5f'; $rotuloData = 'Data dos Logs'
+    }
 
     $linhas = ''
     foreach ($a in $Arquivos) {
@@ -441,9 +615,9 @@ function Montar-HtmlResultado {
           <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:#1e3a5f;font-family:monospace'>$Pid_</p>
         </td>
         <td width='8'></td>
-        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:32%'>
-          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>Data dos Logs</p>
-          <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:#1e3a5f'>$DataRefFmt</p>
+        <td style='padding:8px 12px;background:$bgData;border-radius:6px;text-align:center;width:32%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>$rotuloData</p>
+          <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:$corData'>$DataRefFmt</p>
         </td>
         <td width='8'></td>
         <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:32%'>
@@ -540,19 +714,21 @@ function Processar-Solicitacao {
     $logs     = Extrair-Campo $Corpo 'Logs'
     $dataTxt  = Extrair-Campo $Corpo 'Data'
 
-    Escrever-Log "[SolicitacaoLogSP] PID=$pidSolic | Logs=$logs | Data=$(if ($dataTxt) { $dataTxt } else { 'hoje' })"
+    $ref = Definir-DataReferencia $dataTxt
+    $dataRef   = $ref.Data
+    $historico = $ref.Historico
 
-    $dataRef = $null
-    if ($dataTxt) {
-        $dataRef = Parsear-Data $dataTxt
-        if (-not $dataRef) { Escrever-Log "Campo Data '$dataTxt' invalido - usando data atual" 'WARN' }
-    }
-    if (-not $dataRef) { $dataRef = Get-Date }
+    Escrever-Log ("[SolicitacaoLogSP] PID=$pidSolic | Logs=$logs | " +
+                  "Data=$($dataRef.ToString('dd/MM/yyyy')) ($(if ($historico) { 'historico' } else { 'dia atual' }))")
 
     $agora       = Get-Date
     $agoraFmt    = $agora.ToString('dd/MM/yyyy HH:mm:ss')
     $dataRefFmt  = $dataRef.ToString('dd/MM/yyyy')
-    $nomeZip     = "LOG-SP-$($agora.ToString('ddMMyyyyHHmmss')).zip"
+    if ($historico) {
+        $nomeZip = "LOG-SP-HIST$($dataRef.ToString('yyyyMMdd'))-$($agora.ToString('ddMMyyyyHHmmss')).zip"
+    } else {
+        $nomeZip = "LOG-SP-$($agora.ToString('ddMMyyyyHHmmss')).zip"
+    }
     $zipPath     = Join-Path $BASE_DIR $nomeZip
     $statusEnvio = 'Sucesso'
     $erroMsg     = ''
@@ -569,44 +745,70 @@ function Processar-Solicitacao {
         $winUser  = $Props['windows_user']
         $winSenha = $Props['windows_senha']
         $sharesFeitas = @{}
+        # Pastas ja copiadas, por caminho de origem: quando varios logs apontam
+        # para a mesma pasta ela entra no anexo uma unica vez.
+        $pastasIncluidas = @{}
 
         foreach ($item in $listaLogs) {
-            $caminhoBase = $Props["log.$item.caminho"]
-            $formato     = $Props["log.$item.formato"]
-            if (-not $caminhoBase -or -not $formato) {
-                Escrever-Log "Log '$item' sem configuracao (log.$item.caminho/.formato)." 'WARN'
-                $arquivos += [pscustomobject]@{ nome = $item; caminho = '-'; status = 'sem_config' }
-                continue
+            if ($historico) {
+                $cfg = Resolver-LogHistorico $item $Props $dataRef
+                if (-not $cfg) {
+                    Escrever-Log "Log '$item' sem configuracao de historico (historico.$item.caminho/.formato)." 'WARN'
+                    $arquivos += [pscustomobject]@{ nome = $item; caminho = '-'; status = 'sem_config' }
+                    continue
+                }
+                $caminhoBase = $cfg.Base
+                $padrao      = $cfg.Padrao
+                $tipo        = $cfg.Tipo
+            } else {
+                $caminhoBase = $Props["log.$item.caminho"]
+                $formato     = $Props["log.$item.formato"]
+                if (-not $caminhoBase -or -not $formato) {
+                    Escrever-Log "Log '$item' sem configuracao (log.$item.caminho/.formato)." 'WARN'
+                    $arquivos += [pscustomobject]@{ nome = $item; caminho = '-'; status = 'sem_config' }
+                    continue
+                }
+                $caminhoBase = $caminhoBase.TrimEnd('\', '/')
+                $padrao      = Resolver-Formato $formato $dataRef
+                $tipo        = 'arquivo'
             }
 
-            $nomeArquivo = Resolver-Formato $formato $dataRef
-            $completo    = Join-Path $caminhoBase $nomeArquivo
-
             # Autentica uma vez por share antes do primeiro acesso
-            $share = Get-ShareRaiz $completo
+            $share = Get-ShareRaiz $caminhoBase
             if ($share -and -not $sharesFeitas.ContainsKey($share.ToLower())) {
                 Autenticar-Share $share $winUser $winSenha
                 $sharesFeitas[$share.ToLower()] = $true
             }
 
-            Escrever-Log "Arquivo $item -> $completo"
+            $prefixo = if ($historico) { '[Historico] ' } else { '' }
+            Escrever-Log "$prefixo$(if ($tipo -eq 'pasta') { 'Pasta' } else { 'Arquivo' }) $item -> $caminhoBase\$padrao"
 
             $motivo = ''
-            if (Arquivo-Existe $completo ([ref]$motivo)) {
-                try {
-                    # Subpasta por log evita colisao entre logs de nome igual
+            $itens = Localizar-Itens $caminhoBase $padrao $tipo ([ref]$motivo)
+            if ($itens.Count -eq 0) {
+                Escrever-Log "$(if ($tipo -eq 'pasta') { 'Pasta' } else { 'Arquivo' }) indisponivel ($motivo): $caminhoBase\$padrao" 'WARN'
+                $arquivos += [pscustomobject]@{ nome = $item; caminho = "$caminhoBase\$padrao"; status = 'nao_encontrado' }
+                continue
+            }
+
+            try {
+                if ($tipo -eq 'pasta') {
+                    $descricao = Copiar-Pastas $itens $staging $pastasIncluidas
+                } else {
+                    # Subpasta por log evita colisao entre logs cujo arquivo tem
+                    # o mesmo nome (csi_ws-safe e csi_safe-retaguarda, por ex.)
                     $destPasta = Join-Path $staging $item
                     New-Item -ItemType Directory -Path $destPasta -Force | Out-Null
-                    Copy-Item -LiteralPath $completo -Destination (Join-Path $destPasta $nomeArquivo) -Force -ErrorAction Stop
-                    $arquivos += [pscustomobject]@{ nome = $item; caminho = $completo; status = 'ok' }
-                    $algumArquivo = $true
-                } catch {
-                    Escrever-Log "Falha ao copiar ${completo}: $($_.Exception.Message)" 'WARN'
-                    $arquivos += [pscustomobject]@{ nome = $item; caminho = $completo; status = 'nao_encontrado' }
+                    foreach ($f in $itens) {
+                        Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $destPasta $f.Name) -Force -ErrorAction Stop
+                    }
+                    $descricao = Descrever-Itens $itens $caminhoBase
                 }
-            } else {
-                Escrever-Log "Arquivo indisponivel ($motivo): $completo" 'WARN'
-                $arquivos += [pscustomobject]@{ nome = $item; caminho = $completo; status = 'nao_encontrado' }
+                $arquivos += [pscustomobject]@{ nome = $item; caminho = $descricao; status = 'ok' }
+                $algumArquivo = $true
+            } catch {
+                Escrever-Log "Falha ao copiar $item ($caminhoBase\$padrao): $($_.Exception.Message)" 'WARN'
+                $arquivos += [pscustomobject]@{ nome = $item; caminho = "$caminhoBase\$padrao"; status = 'nao_encontrado' }
             }
         }
 
@@ -614,7 +816,7 @@ function Processar-Solicitacao {
 
         Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $zipPath -Force
 
-        $html = Montar-HtmlResultado $pidSolic $dataRefFmt $agoraFmt $nomeZip $arquivos $AGENT_VERSION
+        $html = Montar-HtmlResultado $pidSolic $dataRefFmt $agoraFmt $nomeZip $arquivos $AGENT_VERSION $historico
         Enviar-Email $Usuario $Senha $destino "[Logs SP][$pidSolic]" $html $zipPath
         Escrever-Log "Email enviado para $destino | Arquivo: $nomeZip"
 
@@ -768,7 +970,7 @@ function Testar-Conexao {
         }
     }
 
-    Write-Host "`nLogs configurados:"
+    Write-Host "`nLogs configurados (dia atual):"
     foreach ($chave in ($props.Keys | Where-Object { $_ -like 'log.*.caminho' } | Sort-Object)) {
         $nome = $chave -replace '^log\.', '' -replace '\.caminho$', ''
         $arquivo = Join-Path $props[$chave] (Resolver-Formato $props["log.$nome.formato"])
@@ -779,6 +981,39 @@ function Testar-Conexao {
             Write-Host "  [AUSENTE] $nome -> $arquivo" -ForegroundColor Yellow
             Write-Host "            motivo: $motivo" -ForegroundColor DarkGray
         }
+    }
+
+    # Historico: valida com a data de ontem, que e o caso de uso mais comum
+    $ontem = (Get-Date).AddDays(-1)
+    Write-Host "`nLogs historicos, testados com a data de ontem ($($ontem.ToString('dd/MM/yyyy'))):"
+    $chavesHist = @($props.Keys | Where-Object { $_ -like 'historico.*.caminho' } | Sort-Object)
+    if ($chavesHist.Count -eq 0) {
+        Write-Host '  (nenhum historico.<log>.caminho configurado)' -ForegroundColor DarkGray
+    }
+    foreach ($chave in $chavesHist) {
+        $nome = $chave -replace '^historico\.', '' -replace '\.caminho$', ''
+        $share = Get-ShareRaiz $props[$chave]
+        if ($share -and -not $sharesFeitas.ContainsKey($share.ToLower())) {
+            Autenticar-Share $share $props['windows_user'] $props['windows_senha']
+            $sharesFeitas[$share.ToLower()] = $true
+        }
+        $cfg = Resolver-LogHistorico $nome $props $ontem
+        $motivo = ''
+        $itens = Localizar-Itens $cfg.Base $cfg.Padrao $cfg.Tipo ([ref]$motivo)
+        if ($itens.Count -gt 0) {
+            Write-Host "  [OK]      $nome ($($cfg.Tipo)) -> $(Descrever-Itens $itens $cfg.Base)" -ForegroundColor Green
+        } else {
+            Write-Host "  [AUSENTE] $nome ($($cfg.Tipo)) -> $($cfg.Base)\$($cfg.Padrao)" -ForegroundColor Yellow
+            Write-Host "            motivo: $motivo" -ForegroundColor DarkGray
+        }
+    }
+
+    # Logs que so tem configuracao do dia atual nao atendem pedidos retroativos
+    $semHist = @($props.Keys | Where-Object { $_ -like 'log.*.caminho' } |
+                 ForEach-Object { $_ -replace '^log\.', '' -replace '\.caminho$', '' } |
+                 Where-Object { -not $props["historico.$_.caminho"] })
+    if ($semHist.Count -gt 0) {
+        Write-Host "`nSem configuracao de historico (so atendem a data de hoje): $($semHist -join ', ')" -ForegroundColor DarkYellow
     }
 }
 
@@ -793,9 +1028,17 @@ if ($args -contains '-TesteConexao' -or $args -contains '--teste-conexao') {
     return
 }
 if ($args -contains '-TesteFormato' -or $args -contains '--teste-formato') {
+    Write-Host 'Dia atual (log.<nome>.formato):'
     foreach ($f in @('{integrador}.log', '{linx-webservices}.log', '{CSIDebugFile}.txt',
                      '{lgComandosSQL_}[YYYYmmdd].txt', '[ddmmyyyy].log')) {
-        Write-Host "$f  ->  $(Resolver-Formato $f)"
+        Write-Host "  $f  ->  $(Resolver-Formato $f)"
+    }
+    $ontem = (Get-Date).AddDays(-1)
+    Write-Host "`nHistorico (historico.<nome>.formato) para $($ontem.ToString('dd/MM/yyyy')):"
+    foreach ($f in @('{linx-webservices_}[yyyy-mm-dd](xxx).zip', '[yyyymmdd]',
+                     '{communication_}[yyyy-mm-dd](xxx).zip',
+                     '{lgComandosSQL_}[yyyymmdd].txt', '[ddmmyyyy].log')) {
+        Write-Host "  $f  ->  $(Resolver-FormatoHistorico $f $ontem)"
     }
     return
 }

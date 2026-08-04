@@ -83,11 +83,26 @@
             document.getElementById("pdv").required = !isSp;
         }
 
+        function dataHojeISO() {
+            var hoje = new Date();
+            var mes = String(hoje.getMonth() + 1).padStart(2, '0');
+            var dia = String(hoje.getDate()).padStart(2, '0');
+            return hoje.getFullYear() + '-' + mes + '-' + dia;
+        }
+
+        function preencherDataAtual() {
+            var campo = document.getElementById("data");
+            // Bloqueia datas futuras no popup de calendário
+            campo.max = dataHojeISO();
+            campo.value = dataHojeISO();
+        }
+
         function limparCampos() {
             document.getElementById("painel").reset();
             atualizaLogs();
             populaPdvs();
             atualizaVisibilidadePdv();
+            preencherDataAtual();
         }
 
         document.addEventListener("DOMContentLoaded", function() {
@@ -95,6 +110,7 @@
             populaPdvs();
             atualizaLogs();
             atualizaVisibilidadePdv();
+            preencherDataAtual();
             document.getElementById("loja").addEventListener("change", function() {
                 populaPdvs();
                 atualizaLogs();
@@ -131,6 +147,11 @@
                     return;
                 }
 
+                if (document.getElementById("data").value > dataHojeISO()) {
+                    mostrarAlerta("A data dos logs não pode ser futura.", "erro");
+                    return;
+                }
+
                 var form = e.target;
                 var formData = new FormData(form);
 
@@ -145,6 +166,7 @@
                         atualizaLogs();
                         populaPdvs();
                         atualizaVisibilidadePdv();
+                        preencherDataAtual();
                     } else {
                         mostrarAlerta("Erro: " + data.mensagem, "erro");
                     }
@@ -166,8 +188,13 @@
             <select id="pdv" name="pdv" required></select>
         </div>
 
-        <label>Arquivos de Logs:</label>
-        <div id="logs"></div>
+        <label for="data">Data dos logs:</label>
+        <input type="date" id="data" name="data" required>
+
+        <div class="logs-container">
+            <h3>Arquivos de Logs:</h3>
+            <div id="logs"></div>
+        </div>
 
         <label for="email_destino">E-mail destino:</label>
         <select id="email_destino" name="email_destino" required>

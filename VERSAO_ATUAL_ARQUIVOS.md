@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
-**Data:** 03 de Agosto de 2026  
-**Versão:** 2.29.0
+**Data:** 04 de Agosto de 2026  
+**Versão:** 2.32.0
 
 ---
 
@@ -18,6 +18,38 @@ A versão é definida em `version.py` e propagada automaticamente para o footer 
 ---
 
 ## 📋 Histórico de Versões
+
+### 2.32.0 — 04/08/2026
+- **Server Agent SP — consulta a logs históricos (dias anteriores):** o agente SP passa a tratar o campo `Data: dd/mm/yyyy` do e-mail da mesma forma que o agente de PDV. Data de hoje (ou ausente) extrai os logs do dia como sempre; data anterior monta os caminhos daquele dia pela nova configuração `historico.<log>.*`; data futura ou inválida cai no dia atual com aviso no log
+- Nova configuração por log no `agent.properties` do agente SP: `historico.<nome>.caminho` (pasta base), `.formato` (nome do arquivo **ou** da pasta) e `.tipo` (`arquivo` ou `pasta`), cobrindo os 8 logs do padrão de servidores SP
+- No formato, `(xxx)` é **curinga**: casa com qualquer texto e traz todos os arquivos do dia de uma vez — é o que resolve os sufixos de rotação do wildfly e do communication (`linx-webservices_2026-08-03.0.zip`, `.1.zip`, …). `[..]` e `{..}` são classificados pelo **conteúdo** (só marcadores de data = data, caso contrário texto fixo), então tanto faz qual dos dois a configuração usar
+- Logs do tipo `pasta` (a pasta diária `debug_P2K\<yyyymmdd>`) têm a pasta inteira compactada no anexo. Quando vários logs apontam para a mesma pasta — `ProcTrans_CSIDebugFile`, `...RT` e `...SO` — ela é incluída **uma única vez**, e os três aparecem como incluídos no e-mail
+- E-mail de resposta do agente SP: o card da data fica destacado em âmbar com o rótulo "Data (histórico)" nas consultas retroativas, e o anexo recebe nome próprio (`LOG-SP-HIST<yyyymmdd>-<timestamp>.zip`)
+- `testar_agente.bat` passa a validar também os caminhos históricos (usando a data de ontem) e a listar quais logs só atendem à data de hoje
+- A mesma lógica foi portada para a versão Python do agente SP (`server_agent_sp.py` v1.2.0), mantida para redes sem a restrição do EDR
+
+### 2.31.1 — 03/08/2026
+- Solicitar Logs: o ícone que abre o popup de calendário do campo "Data dos logs" passa a ficar à **esquerda** da data, no início do campo (antes ficava no canto direito)
+
+### 2.31.0 — 03/08/2026
+- **Agente — consulta a logs históricos (dias anteriores):** o agente passa a ler o campo `Data: dd/mm/yyyy` do e-mail de solicitação. Se a data for a atual, extrai os logs do dia como sempre; se for anterior, monta os caminhos dos arquivos daquele dia a partir da nova configuração `historico.<log>.*` do `agent.properties`
+- Nova configuração por log no `agent.properties`: `historico.<log>.caminho` (pasta base), `.formato` (nome do arquivo/pasta) e `.tipo` (`arquivo` ou `pasta`). No formato, `[..]` é formato de data (ex.: `[yyyy-mm-dd]`), `(..)` são as variáveis `LOJA`/`PDV` e `{..}` é texto fixo — ex.: `{MFDE}(LOJA)(PDV)[yyyymmdd].zip` resolve para `MFDE004545020260802.zip`
+- Logs do tipo `pasta` (CSIDebugFile, CSIDebugFileRT e CSIDebugFileSO, que ficam na pasta diária `\p2k\Bin\debug_P2K\<yyyymmdd>\`) têm a pasta inteira compactada no anexo. Quando vários logs apontam para a mesma pasta, ela é compactada **uma única vez**
+- E-mail de resposta passa a exibir a **data dos logs** nos cards do cabeçalho, destacada em âmbar quando é uma consulta histórica; o anexo histórico recebe nome próprio (`LOG-<loja>-<pdv>-HIST<yyyymmdd>-<timestamp>.zip`)
+- Logs sem configuração de histórico (ex.: `promo-client`) são reportados como "Sem configuração" na tabela do e-mail, sem interromper os demais
+
+### 2.30.1 — 03/08/2026
+- Solicitar Logs: validação para **não permitir data futura** no campo Data dos logs — o popup de calendário bloqueia datas após hoje (atributo `max`), o formulário exibe alerta se uma data futura for digitada, e o backend recusa a solicitação (HTTP 400) como proteção final
+
+### 2.30.0 — 03/08/2026
+- **Solicitar Logs — campo "Data dos logs":** novo campo de data no formulário (com popup de calendário nativo), sempre preenchido com a data do dia ao carregar a tela, ao limpar e após cada envio. A data escolhida vai no corpo de todos os e-mails de solicitação como `Data: dd/mm/yyyy` (Solicitação Log, linx-webservices e Log SP)
+- O Server Agent SP já interpreta o campo `Data:` (usa a data nos formatos de nome de arquivo); o agente de PDV ignora a linha por enquanto — a extração retroativa nos agentes fica para um desenvolvimento futuro
+
+### 2.29.2 — 03/08/2026
+- Solicitar Logs: a seção **Arquivos de Logs** ganhou o mesmo padrão visual das **Consultas Disponíveis** do Exportar Dados Oracle — container com borda e fundo cinza, título azul, e cada checkbox dentro de uma caixinha branca com borda (hover com fundo claro e borda azul)
+
+### 2.29.1 — 03/08/2026
+- **Solicitar Logs — seção Arquivos de Logs:** colunas alargadas (mínimo de 150px para 190px, largura da grade de 640px para 800px) para que os nomes longos caibam por inteiro. Antes, `integrador_nfeio_client`, `integrador_idb_client` e `ProcTrans_CSIDebugFile` ultrapassavam a coluna e ficavam cortados
 
 ### 2.29.0 — 03/08/2026
 - **Solicitar Logs — integração com o Server Agent SP:** nova loja **SERVERS_EP_SP** no combobox de lojas. Ao selecioná-la, o campo PDV é ocultado e a seção **Arquivos de Logs** passa a listar os logs dos servidores EP SP extraídos pelo agente (`integrador_idb`, `webservices`, `ProcTrans_CSIDebugFile`, `lgComandosSQL`, `csi_ws-safe`, `csi_safe-retaguarda`), cada checkbox com **hint (tooltip) do ip do servidor** de origem

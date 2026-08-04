@@ -220,6 +220,7 @@ select,
 input[type="email"],
 input[type="text"],
 input[type="number"],
+input[type="date"],
 textarea {
     width: 100%;
     padding: 9px 12px;
@@ -235,10 +236,27 @@ select:focus,
 input[type="email"]:focus,
 input[type="text"]:focus,
 input[type="number"]:focus,
+input[type="date"]:focus,
 textarea:focus {
     border-color: #4a90e2;
     box-shadow: 0 0 0 3px rgba(74,144,226,.15);
     outline: none;
+}
+
+/* Campo de data: ícone do calendário à esquerda, antes da data */
+input[type="date"] {
+    position: relative;
+    padding-left: 38px;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    margin: 0;
+    padding: 0;
+    cursor: pointer;
 }
 
 button,
@@ -287,34 +305,53 @@ a:hover { text-decoration: underline; }
     margin-bottom: 20px;
 }
 
-/* Checkboxes de logs */
+/* Checkboxes de logs — mesmo padrão visual das Consultas Disponíveis (Exportar Oracle) */
+.logs-container {
+    border: 1px solid #ddd;
+    padding: 15px;
+    background-color: #f9f9f9;
+    border-radius: 5px;
+    margin-bottom: 20px;
+    margin-top: 20px;
+}
+
+.logs-container h3 {
+    margin-top: 0;
+    color: #4a90e2;
+}
+
 #logs {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 8px;
-    max-width: 640px;
-    margin-top: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
 }
 
 #logs label {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    /* Nomes de log não têm espaço para quebrar: sem isto, um nome maior que a
+       coluna vazaria por cima da caixinha vizinha em vez de quebrar linha. */
+    overflow-wrap: anywhere;
     font-weight: normal;
-    background: #f0f4f8;
-    padding: 4px 8px;
-    border-radius: 5px;
+    padding: 10px;
+    background-color: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
     cursor: pointer;
-    margin-top: 0;
+    transition: all 0.2s ease;
+    margin: 0;
     color: #374151;
-    transition: background .15s;
 }
 
-#logs label:hover { background: #dbeafe; }
+#logs label:hover {
+    background-color: #f0f4f8;
+    border-color: #4a90e2;
+}
 
 #logs input[type="checkbox"] {
-    transform: scale(1.1);
     cursor: pointer;
+    margin: 0;
     accent-color: #1e3a5f;
 }
 

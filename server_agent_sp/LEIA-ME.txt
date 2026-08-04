@@ -1,5 +1,5 @@
 ===========================================================================
-Server Agent SP (agente_sp) v2.0.0 - PowerShell
+Server Agent SP (agente_sp) v2.1.0 - PowerShell
 ===========================================================================
 
 Versao reduzida do Agent Extrator Log: apenas extracao de logs de
@@ -20,12 +20,26 @@ Corpo esperado do e-mail:
     PID: <identificador>
     Destino: <e-mail que recebera os logs>
     Logs: <nome1,nome2,...>
-    Data: <dd/mm/yyyy>          (opcional - data usada nos nomes com data;
-                                 se ausente, usa a data atual)
+    Data: <dd/mm/yyyy>          (opcional - se ausente, usa a data atual)
 
-Logs disponiveis (definidos em agent.properties):
+O campo Data decide de onde os logs saem:
+    data de hoje (ou ausente) -> logs do dia, config log.<nome>.*
+    data anterior             -> logs daquele dia, config historico.<nome>.*
+    data futura ou invalida   -> cai no dia atual, com aviso no log
+
+Logs do dia (log.<nome>.* no agent.properties):
     integrador_idb, webservices, ProcTrans_CSIDebugFile,
     lgComandosSQL, csi_ws-safe, csi_safe-retaguarda
+
+Logs historicos (historico.<nome>.* no agent.properties):
+    webservices, ProcTrans_CSIDebugFile, ProcTrans_CSIDebugFileRT,
+    ProcTrans_CSIDebugFileSO, ProcTrans_communication, lgComandosSQL,
+    csi_ws-safe, csi_safe-retaguarda
+
+As duas listas nao sao iguais. integrador_idb so atende a data de hoje;
+os tres ProcTrans (CSIDebugFileRT, CSIDebugFileSO e communication) so atendem
+datas anteriores. Um log pedido fora da lista correspondente volta no e-mail
+como "Sem configuracao", sem atrapalhar os demais.
 
 ---------------------------------------------------------------------------
 INSTALACAO (como servico Windows)
@@ -95,6 +109,7 @@ server_agent_sp.ps1 com um certificado de assinatura de codigo interno.
 ---------------------------------------------------------------------------
 FORMATO DA NOMENCLATURA DOS LOGS (agent.properties)
 ---------------------------------------------------------------------------
+LOGS DO DIA
     log.<nome>.caminho = pasta onde o arquivo esta (UNC ou local)
     log.<nome>.formato = nomenclatura do arquivo:
         {texto}  -> parte fixa do nome
@@ -106,9 +121,37 @@ FORMATO DA NOMENCLATURA DOS LOGS (agent.properties)
         {lgComandosSQL_}[YYYYmmdd].txt -> lgComandosSQL_20260803.txt
         [ddmmyyyy].log                 -> 03082026.log
 
+LOGS HISTORICOS (dias anteriores)
+    historico.<nome>.caminho = pasta base onde o arquivo/pasta do dia fica
+    historico.<nome>.formato = nomenclatura do arquivo OU da pasta
+    historico.<nome>.tipo    = arquivo | pasta
+
+    Tokens do formato:
+        [..] ou {..} -> data quando o conteudo so tem marcadores de data
+                        (yyyy, yy, mm, dd, hh, ss); senao, texto fixo.
+                        A classificacao e pelo conteudo, entao tanto faz se a
+                        configuracao usar [yyyymmdd] ou {yyyymmdd}.
+        (xxx)        -> curinga: casa com qualquer texto. Serve para os
+                        sufixos de rotacao (".0", ".2.log") que o servidor
+                        acrescenta quando gera mais de um arquivo no dia.
+        (LOJA)/(PDV) -> variaveis da solicitacao (nao usadas nos logs SP)
+
+    Exemplos:
+        {linx-webservices_}[yyyy-mm-dd](xxx).zip
+                        -> linx-webservices_2026-08-03*.zip
+                           (traz TODOS os arquivos do dia: .0, .1, .2 ...)
+        [yyyymmdd]      -> 20260803   (tipo=pasta)
+
+    Quando tipo=pasta, a pasta inteira e compactada no anexo. Se varios logs
+    apontarem para a mesma pasta - o caso de CSIDebugFile, CSIDebugFileRT e
+    CSIDebugFileSO, que dividem a pasta diaria do debug_P2K - ela entra no
+    anexo UMA UNICA VEZ, e os tres aparecem como incluidos no e-mail.
+
 No zip enviado, cada arquivo vai em uma subpasta com o nome do log, para
 evitar colisao entre logs que geram o mesmo nome (ex.: csi_ws-safe e
-csi_safe-retaguarda, ambos [ddmmyyyy].log).
+csi_safe-retaguarda, ambos [ddmmyyyy].log). As pastas entram com o proprio
+nome (a data) na raiz do zip. O anexo de uma consulta historica se chama
+LOG-SP-HIST<yyyymmdd>-<timestamp>.zip, para nao se confundir com o do dia.
 
 ---------------------------------------------------------------------------
 TESTES (sem consumir e-mails da caixa)

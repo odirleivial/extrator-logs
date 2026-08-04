@@ -5,7 +5,7 @@
 # Executa como serviço Windows via NSSM (ver instalar_servico.bat).
 # ---------------------------------------------------------------------------
 import imaplib, email, smtplib
-import os, time, csv, zipfile, re, logging
+import os, time, csv, zipfile, re, logging, fnmatch
 import ctypes, ctypes.wintypes
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -20,7 +20,7 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-AGENT_VERSION = '1.1.0'
+AGENT_VERSION = '1.2.0'
 ASSUNTO_GATILHO = '[Solicitação Log SP]'
 
 CONFIG_FILE = os.path.join(BASE_DIR, 'agent.properties')
@@ -278,6 +278,83 @@ def parsear_data(texto):
     return None
 
 # ---------------------------------------------------------------------------
+# Logs históricos (dias anteriores)
+#
+# Configuração no agent.properties:
+#   historico.<log>.caminho = pasta base onde o arquivo/pasta do dia fica
+#   historico.<log>.formato = nomenclatura do arquivo ou da pasta
+#   historico.<log>.tipo    = arquivo | pasta
+#
+# Tokens: [..] e {..} viram data quando o conteúdo só tem marcadores de data,
+# senão são texto fixo; (xxx) é curinga; (LOJA)/(PDV) são as variáveis da
+# solicitação. Texto fora dos delimitadores é literal.
+# ---------------------------------------------------------------------------
+_RE_TOKEN_FORMATO = re.compile(r'\[([^\]]*)\]|\(([^)]*)\)|\{([^}]*)\}')
+_RE_TOKEN_SO_DATA = re.compile(r'^[ymdhs\-_/.: ]+$')
+
+def _token_eh_data(conteudo):
+    """Classifica o token pelo conteúdo e não pelo delimitador, para tolerar
+    [..] e {..} trocados na configuração."""
+    c = conteudo.lower()
+    return bool(c) and bool(_RE_TOKEN_SO_DATA.match(c)) and bool(re.search(r'[ymd]', c))
+
+def resolver_formato_historico(formato, data, loja='', pdv=''):
+    """Resolve o formato no nome (ou padrão com curinga) do dia informado.
+    Ex.: '{linx-webservices_}[yyyy-mm-dd](xxx).zip'
+         -> 'linx-webservices_2026-08-03*.zip'"""
+    def _sub(m):
+        conteudo = next(g for g in m.groups() if g is not None)
+        chave = conteudo.strip().upper()
+        if chave == 'LOJA':
+            return loja
+        if chave == 'PDV':
+            return pdv
+        if chave == 'XXX':
+            return '*'
+        if _token_eh_data(conteudo):
+            return _tokens_data(conteudo, data)
+        return conteudo
+    return _RE_TOKEN_FORMATO.sub(_sub, formato)
+
+def localizar_itens(base, padrao, tipo):
+    """Arquivos (ou pastas) que casam com o padrão dentro da base. Com curinga
+    pode retornar mais de um — é o caso dos logs rotacionados no mesmo dia.
+    Retorna (itens, motivo) — motivo preenchido só quando a lista vem vazia."""
+    eh_pasta = (tipo == 'pasta')
+    try:
+        if '*' in padrao:
+            candidatos = fnmatch.filter(os.listdir(base), padrao)
+            itens = [os.path.join(base, n) for n in sorted(candidatos)]
+            itens = [c for c in itens if os.path.isdir(c) == eh_pasta]
+        else:
+            completo = os.path.join(base, padrao)
+            existe = os.path.isdir(completo) if eh_pasta else os.path.isfile(completo)
+            itens = [completo] if existe else []
+    except OSError as e:
+        return [], str(e)
+
+    if not itens:
+        return [], 'pasta não encontrada' if eh_pasta else 'arquivo não encontrado'
+    return itens, ''
+
+def resolver_log_historico(log_item, props, data):
+    """Lê historico.<log>.* e devolve (base, padrao, tipo).
+    Retorna None quando o log não tem configuração de histórico."""
+    base    = props.get(f'historico.{log_item}.caminho', '')
+    formato = props.get(f'historico.{log_item}.formato', '')
+    if not base or not formato:
+        return None
+    tipo = props.get(f'historico.{log_item}.tipo', 'arquivo').strip().lower()
+    return base.rstrip('\\/'), resolver_formato_historico(formato, data), tipo
+
+def descrever_itens(itens, base):
+    """Texto do que foi coletado, para a coluna "Arquivo" do e-mail."""
+    if len(itens) == 1:
+        return itens[0]
+    nomes = ', '.join(os.path.basename(i) for i in itens)
+    return f'{base}\\ ({len(itens)} arquivos: {nomes})'
+
+# ---------------------------------------------------------------------------
 # Solicitação de Logs SP
 # Corpo esperado do e-mail:
 #   PID: <identificador>
@@ -291,17 +368,28 @@ def processar_solicitacao_log_sp(imap, num, corpo, props, email_user, email_pass
     logs     = extrair_campo(corpo, 'Logs')
     data_txt = extrair_campo(corpo, 'Data')
 
-    log(f'[SolicitacaoLogSP] PID={pid} | Logs={logs} | Data={data_txt or "hoje"}')
-
+    # Data de referência: quando anterior à data atual, os logs vêm dos arquivos
+    # históricos (configuração historico.<log>.*); caso contrário, do dia corrente.
+    hoje     = datetime.now().date()
     data_ref = parsear_data(data_txt) if data_txt else None
     if data_txt and not data_ref:
         log(f'Aviso: campo Data "{data_txt}" inválido — usando data atual', 'warning')
-    data_ref = data_ref or datetime.now()
+    if data_ref and data_ref.date() > hoje:
+        log(f'Data solicitada ({data_ref:%d/%m/%Y}) é futura — usando os logs do dia atual.', 'warning')
+        data_ref = None
+    historico = data_ref is not None and data_ref.date() < hoje
+    data_ref  = data_ref or datetime.now()
+
+    log(f'[SolicitacaoLogSP] PID={pid} | Logs={logs} | '
+        f'Data={data_ref:%d/%m/%Y} ({"histórico" if historico else "dia atual"})')
 
     agora         = datetime.now()
     agora_fmt     = agora.strftime('%d/%m/%Y %H:%M:%S')
     data_ref_fmt  = data_ref.strftime('%d/%m/%Y')
-    nome_zip      = f'LOG-SP-{agora.strftime("%d%m%Y%H%M%S")}.zip'
+    if historico:
+        nome_zip = f'LOG-SP-HIST{data_ref:%Y%m%d}-{agora.strftime("%d%m%Y%H%M%S")}.zip'
+    else:
+        nome_zip = f'LOG-SP-{agora.strftime("%d%m%Y%H%M%S")}.zip'
     nome_zip_path = os.path.join(BASE_DIR, nome_zip)
     status_envio  = 'Sucesso'
     erro_msg      = ''
@@ -320,19 +408,31 @@ def processar_solicitacao_log_sp(imap, num, corpo, props, email_user, email_pass
             raise ValueError('Campo Logs vazio no corpo do e-mail.')
 
         caminhos_arquivos = []  # (caminho_absoluto, arcname)
+        # Pastas a compactar, deduplicadas: quando vários logs apontam para a
+        # mesma pasta, ela entra no zip uma única vez.
+        pastas_a_compactar = {}
 
         for log_item in lista_logs:
-            caminho_base = props.get(f'log.{log_item}.caminho')
-            formato      = props.get(f'log.{log_item}.formato')
-            if not caminho_base or not formato:
-                log(f'Aviso: log "{log_item}" sem configuração (log.{log_item}.caminho/.formato).', 'warning')
-                arquivos_status.append({'nome': log_item, 'caminho': '—', 'status': 'sem_config'})
-                continue
+            if historico:
+                cfg = resolver_log_historico(log_item, props, data_ref)
+                if not cfg:
+                    log(f'Aviso: log "{log_item}" sem configuração de histórico '
+                        f'(historico.{log_item}.caminho/.formato).', 'warning')
+                    arquivos_status.append({'nome': log_item, 'caminho': '—', 'status': 'sem_config'})
+                    continue
+                caminho_base, padrao, tipo = cfg
+            else:
+                caminho_base = props.get(f'log.{log_item}.caminho')
+                formato      = props.get(f'log.{log_item}.formato')
+                if not caminho_base or not formato:
+                    log(f'Aviso: log "{log_item}" sem configuração (log.{log_item}.caminho/.formato).', 'warning')
+                    arquivos_status.append({'nome': log_item, 'caminho': '—', 'status': 'sem_config'})
+                    continue
+                caminho_base = caminho_base.rstrip('\\/')
+                padrao       = resolver_formato(formato, data_ref)
+                tipo         = 'arquivo'
 
-            nome_arquivo     = resolver_formato(formato, data_ref)
-            caminho_absoluto = os.path.join(caminho_base, nome_arquivo)
-
-            share = _share_raiz(caminho_absoluto)
+            share = _share_raiz(caminho_base)
             if share and share.lower() not in shares_autenticadas:
                 try:
                     autenticar_unc(share, windows_user, windows_senha)
@@ -340,27 +440,71 @@ def processar_solicitacao_log_sp(imap, num, corpo, props, email_user, email_pass
                     log(str(e), 'error')
                 shares_autenticadas.add(share.lower())
 
-            log(f'Arquivo {log_item} -> {caminho_absoluto}')
-            if os.path.exists(caminho_absoluto):
+            prefixo = '[Histórico] ' if historico else ''
+            rotulo  = 'Pasta' if tipo == 'pasta' else 'Arquivo'
+            log(f'{prefixo}{rotulo} {log_item} -> {os.path.join(caminho_base, padrao)}')
+
+            itens, motivo = localizar_itens(caminho_base, padrao, tipo)
+            if not itens:
+                log(f'Aviso: {rotulo.lower()} indisponível ({motivo}): '
+                    f'{os.path.join(caminho_base, padrao)}', 'warning')
+                arquivos_status.append({'nome': log_item,
+                                        'caminho': os.path.join(caminho_base, padrao),
+                                        'status': 'nao_encontrado'})
+                continue
+
+            if tipo == 'pasta':
+                for pasta in itens:
+                    chave = os.path.normcase(os.path.normpath(pasta))
+                    if chave in pastas_a_compactar:
+                        log(f'Pasta já incluída por outro log — não será compactada de novo: {pasta}')
+                    else:
+                        pastas_a_compactar[chave] = pasta
+            else:
                 # Pasta por log dentro do zip evita colisão de nomes iguais
                 # (ex.: dois logs com formato [ddmmyyyy].log)
-                caminhos_arquivos.append((caminho_absoluto, f'{log_item}/{nome_arquivo}'))
-                arquivos_status.append({'nome': log_item, 'caminho': caminho_absoluto, 'status': 'ok'})
-            else:
-                log(f'Aviso: arquivo não encontrado: {caminho_absoluto}', 'warning')
-                arquivos_status.append({'nome': log_item, 'caminho': caminho_absoluto, 'status': 'nao_encontrado'})
+                for arq in itens:
+                    caminhos_arquivos.append((arq, f'{log_item}/{os.path.basename(arq)}'))
 
-        if not caminhos_arquivos:
+            arquivos_status.append({'nome': log_item,
+                                    'caminho': descrever_itens(itens, caminho_base),
+                                    'status': 'ok'})
+
+        if not caminhos_arquivos and not pastas_a_compactar:
             raise FileNotFoundError('Nenhum arquivo válido para compactar.')
 
         with zipfile.ZipFile(nome_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
             for arquivo, arcname in caminhos_arquivos:
                 zipf.write(arquivo, arcname=arcname)
+            raizes_usadas = set()
+            for caminho_pasta in pastas_a_compactar.values():
+                # Pastas de logs diferentes costumam ter o mesmo nome (a data),
+                # então desempata com sufixo numérico dentro do zip.
+                raiz = os.path.basename(caminho_pasta.rstrip('\\/')) or 'pasta'
+                base_raiz, n = raiz, 2
+                while raiz in raizes_usadas:
+                    raiz = f'{base_raiz}_{n}'
+                    n += 1
+                raizes_usadas.add(raiz)
+                total = 0
+                for dirpath, _, nomes in os.walk(caminho_pasta):
+                    for nome_arq in nomes:
+                        completo = os.path.join(dirpath, nome_arq)
+                        rel      = os.path.relpath(completo, caminho_pasta)
+                        zipf.write(completo, arcname=os.path.join(raiz, rel))
+                        total += 1
+                log(f'Pasta incluída no anexo: {caminho_pasta} -> {raiz}/ ({total} arquivo(s))')
 
         n_ok   = sum(1 for a in arquivos_status if a['status'] == 'ok')
         n_erro = len(arquivos_status) - n_ok
 
         # ---- HTML do e-mail ----
+        # O card da data fica em âmbar quando os logs são de um dia anterior
+        if historico:
+            bg_data, cor_data, rotulo_data = '#fef3c7', '#92400e', 'Data (histórico)'
+        else:
+            bg_data, cor_data, rotulo_data = '#f8fafc', '#1e3a5f', 'Data dos Logs'
+
         linhas_html = ''
         linhas_txt  = ''
         for a in arquivos_status:
@@ -403,9 +547,9 @@ def processar_solicitacao_log_sp(imap, num, corpo, props, email_user, email_pass
           <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:#1e3a5f;font-family:monospace'>{pid}</p>
         </td>
         <td width='8'></td>
-        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:32%'>
-          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>Data dos Logs</p>
-          <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:#1e3a5f'>{data_ref_fmt}</p>
+        <td style='padding:8px 12px;background:{bg_data};border-radius:6px;text-align:center;width:32%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>{rotulo_data}</p>
+          <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:{cor_data}'>{data_ref_fmt}</p>
         </td>
         <td width='8'></td>
         <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:32%'>
