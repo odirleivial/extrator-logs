@@ -1,5 +1,7 @@
+import getpass
 import logging
 import os
+import socket
 import sys
 from logging.handlers import RotatingFileHandler
 
@@ -15,6 +17,38 @@ def _base_dir():
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def _detectar_usuario():
+    """Usuário do Windows logado na máquina que está rodando o BEC."""
+    try:
+        usuario = getpass.getuser()
+        if usuario:
+            return usuario
+    except Exception:
+        pass
+    return os.environ.get('USERNAME') or os.environ.get('USER') or 'desconhecido'
+
+
+def _detectar_maquina():
+    try:
+        return socket.gethostname()
+    except Exception:
+        return os.environ.get('COMPUTERNAME') or 'desconhecida'
+
+
+# Identificação da estação — usada no log, nos e-mails ao agente e nos
+# registros de execução. Resolvida uma única vez, no import.
+USUARIO_WINDOWS = _detectar_usuario()
+MAQUINA = _detectar_maquina()
+
+
+class _FiltroUsuario(logging.Filter):
+    """Injeta o usuário do Windows em todo registro, inclusive nos do werkzeug."""
+
+    def filter(self, record):
+        record.usuario = USUARIO_WINDOWS
+        return True
 
 def _ler_config_log(base):
     """Lê apenas as chaves log.* de config.properties.
@@ -62,9 +96,12 @@ def configurar_logger(nome_arquivo='extrator_logs.log'):
         logger.handlers.clear()
 
     formato = logging.Formatter(
-        '[%(asctime)s] - %(levelname)s - %(message)s',
+        '[%(asctime)s] - [%(usuario)s] - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    # Filtro no handler (e não no logger) para valer também nos registros que
+    # outros loggers — como o werkzeug — encaminham para estes handlers.
+    filtro = _FiltroUsuario()
 
     handler_arquivo = RotatingFileHandler(
         caminho_log,
@@ -74,6 +111,7 @@ def configurar_logger(nome_arquivo='extrator_logs.log'):
     )
     handler_arquivo.setLevel(nivel)
     handler_arquivo.setFormatter(formato)
+    handler_arquivo.addFilter(filtro)
     logger.addHandler(handler_arquivo)
 
     # Console só quando não estiver empacotado
@@ -81,6 +119,7 @@ def configurar_logger(nome_arquivo='extrator_logs.log'):
         handler_console = logging.StreamHandler()
         handler_console.setLevel(_NIVEIS.get(cfg['console'], logging.INFO))
         handler_console.setFormatter(formato)
+        handler_console.addFilter(filtro)
         logger.addHandler(handler_console)
 
     return logger, caminho_log

@@ -20,7 +20,7 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-AGENT_VERSION = '1.2.0'
+AGENT_VERSION = '1.4.0'
 ASSUNTO_GATILHO = '[Solicitação Log SP]'
 
 CONFIG_FILE = os.path.join(BASE_DIR, 'agent.properties')
@@ -258,14 +258,8 @@ def _tokens_data(tokens, data):
             resultado += tokens[i]; i += 1
     return resultado
 
-def resolver_formato(formato, data=None):
-    """Converte o formato parametrizado no nome real do arquivo."""
-    data = data or datetime.now()
-    def _sub(m):
-        if m.group(1) is not None:      # {fixo}
-            return m.group(1)
-        return _tokens_data(m.group(2), data)  # [data]
-    return re.sub(r'\{([^}]*)\}|\[([^\]]*)\]', _sub, formato)
+# resolver_formato foi unificado com o dos históricos: ver resolver_formato_log,
+# que vale para as duas configurações.
 
 def parsear_data(texto):
     """Interpreta o campo opcional Data do e-mail (dd/mm/yyyy, dd-mm-yyyy ou yyyy-mm-dd)."""
@@ -298,10 +292,12 @@ def _token_eh_data(conteudo):
     c = conteudo.lower()
     return bool(c) and bool(_RE_TOKEN_SO_DATA.match(c)) and bool(re.search(r'[ymd]', c))
 
-def resolver_formato_historico(formato, data, loja='', pdv=''):
+def resolver_formato_log(formato, data=None, loja='', pdv=''):
     """Resolve o formato no nome (ou padrão com curinga) do dia informado.
+    Vale para os logs do dia e para os históricos.
     Ex.: '{linx-webservices_}[yyyy-mm-dd](xxx).zip'
          -> 'linx-webservices_2026-08-03*.zip'"""
+    data = data or datetime.now()
     def _sub(m):
         conteudo = next(g for g in m.groups() if g is not None)
         chave = conteudo.strip().upper()
@@ -345,7 +341,10 @@ def resolver_log_historico(log_item, props, data):
     if not base or not formato:
         return None
     tipo = props.get(f'historico.{log_item}.tipo', 'arquivo').strip().lower()
-    return base.rstrip('\\/'), resolver_formato_historico(formato, data), tipo
+    # O caminho também passa pelo resolvedor: há logs cuja data está na PASTA e
+    # não no nome do arquivo (ex.: ...\logsTesouraria\[yyyymmdd]).
+    base = resolver_formato_log(base, data).rstrip('\\/')
+    return base, resolver_formato_log(formato, data), tipo
 
 def descrever_itens(itens, base):
     """Texto do que foi coletado, para a coluna "Arquivo" do e-mail."""
@@ -428,9 +427,9 @@ def processar_solicitacao_log_sp(imap, num, corpo, props, email_user, email_pass
                     log(f'Aviso: log "{log_item}" sem configuração (log.{log_item}.caminho/.formato).', 'warning')
                     arquivos_status.append({'nome': log_item, 'caminho': '—', 'status': 'sem_config'})
                     continue
-                caminho_base = caminho_base.rstrip('\\/')
-                padrao       = resolver_formato(formato, data_ref)
-                tipo         = 'arquivo'
+                caminho_base = resolver_formato_log(caminho_base, data_ref).rstrip('\\/')
+                padrao       = resolver_formato_log(formato, data_ref)
+                tipo         = props.get(f'log.{log_item}.tipo', 'arquivo').strip().lower()
 
             share = _share_raiz(caminho_base)
             if share and share.lower() not in shares_autenticadas:
@@ -459,7 +458,9 @@ def processar_solicitacao_log_sp(imap, num, corpo, props, email_user, email_pass
                     if chave in pastas_a_compactar:
                         log(f'Pasta já incluída por outro log — não será compactada de novo: {pasta}')
                     else:
-                        pastas_a_compactar[chave] = pasta
+                        # Guarda o log de origem: a pasta entra no zip sob o nome
+                        # dele, senão o anexo traria só pastas com a data.
+                        pastas_a_compactar[chave] = (pasta, log_item)
             else:
                 # Pasta por log dentro do zip evita colisão de nomes iguais
                 # (ex.: dois logs com formato [ddmmyyyy].log)
@@ -477,10 +478,11 @@ def processar_solicitacao_log_sp(imap, num, corpo, props, email_user, email_pass
             for arquivo, arcname in caminhos_arquivos:
                 zipf.write(arquivo, arcname=arcname)
             raizes_usadas = set()
-            for caminho_pasta in pastas_a_compactar.values():
-                # Pastas de logs diferentes costumam ter o mesmo nome (a data),
-                # então desempata com sufixo numérico dentro do zip.
-                raiz = os.path.basename(caminho_pasta.rstrip('\\/')) or 'pasta'
+            for caminho_pasta, log_origem in pastas_a_compactar.values():
+                # Desempate defensivo: duas pastas de origem homônimas dentro do
+                # mesmo log se sobrescreveriam sem isto.
+                nome_pasta = os.path.basename(caminho_pasta.rstrip('\\/')) or 'pasta'
+                raiz = f'{log_origem}/{nome_pasta}'
                 base_raiz, n = raiz, 2
                 while raiz in raizes_usadas:
                     raiz = f'{base_raiz}_{n}'
@@ -491,7 +493,7 @@ def processar_solicitacao_log_sp(imap, num, corpo, props, email_user, email_pass
                     for nome_arq in nomes:
                         completo = os.path.join(dirpath, nome_arq)
                         rel      = os.path.relpath(completo, caminho_pasta)
-                        zipf.write(completo, arcname=os.path.join(raiz, rel))
+                        zipf.write(completo, arcname=f'{raiz}/' + rel.replace('\\', '/'))
                         total += 1
                 log(f'Pasta incluída no anexo: {caminho_pasta} -> {raiz}/ ({total} arquivo(s))')
 
@@ -793,8 +795,10 @@ if __name__ == '__main__':
     # Teste do parser de formatos: server_agent_sp.exe --selftest-formato
     if '--selftest-formato' in sys.argv:
         exemplos = ['{integrador}.log', '{linx-webservices}.log', '{CSIDebugFile}.txt',
-                    '{lgComandosSQL_}[YYYYmmdd].txt', '[ddmmyyyy].log']
+                    '{lgComandosSQL_}[YYYYmmdd].txt', '[ddmmyyyy].log', '[yyyymmdd]',
+                    '{linx-webservices_}[yyyy-mm-dd](xxx).zip',
+                    '{logsTesouraria_}[yyyymmdd].zip']
         for f in exemplos:
-            print(f'{f}  ->  {resolver_formato(f)}')
+            print(f'{f}  ->  {resolver_formato_log(f)}')
         sys.exit(0)
     main()

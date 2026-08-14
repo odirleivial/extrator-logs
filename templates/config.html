@@ -29,6 +29,81 @@
         .cfg-section { display: none; }
         .cfg-section.active { display: block; }
 
+        /* Aba Administrador — destacada por lidar com credenciais */
+        .cfg-tab-admin { background: #fdf0e3; color: #9a5b12; }
+        .cfg-tab-admin:hover { background: #f8ddbf; color: #9a5b12; }
+        .cfg-tab-admin.active { background: #d98324; color: #fff; }
+
+        .admin-aviso {
+            background: #fff8ec;
+            border: 1px solid #f0d9b5;
+            border-left: 4px solid #d98324;
+            border-radius: 4px;
+            padding: 12px 16px;
+            margin-bottom: 18px;
+            font-size: 0.86rem;
+            color: #7a4a10;
+            line-height: 1.5;
+        }
+        .admin-aviso code { background: #f3e3ca; padding: 1px 5px; border-radius: 3px; }
+
+        .tag-preenchido, .tag-vazio {
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 1px 7px;
+            border-radius: 10px;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+        .tag-preenchido { background: #dcfce7; color: #166534; }
+        .tag-vazio      { background: #fee2e2; color: #991b1b; }
+
+        /* Atualização dos agentes */
+        .agente-lista { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+        .agente-opcao {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 11px 14px;
+            border: 1px solid #dde3ed;
+            border-radius: 5px;
+            background: #fafbfc;
+            cursor: pointer;
+            transition: border-color .15s, background .15s;
+        }
+        .agente-opcao:hover { border-color: #d98324; background: #fffaf3; }
+        .agente-opcao:has(input:checked) { border-color: #d98324; background: #fff8ec; }
+        .agente-opcao input { width: auto; margin: 0; cursor: pointer; }
+        .agente-opcao code {
+            background: #eef1f6;
+            color: #5b6472;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 0.78rem;
+            margin-left: 8px;
+        }
+
+        .agente-acoes { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+        .pacote-nome { font-size: 0.85rem; color: #6b7280; }
+
+        .btn-enviar-agente {
+            background: #d98324;
+            color: #fff;
+            border: none;
+            padding: 10px 22px;
+            border-radius: 4px;
+            font-size: 0.92rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-enviar-agente:hover:not(:disabled) { background: #bd6f18; }
+        .btn-enviar-agente:disabled { background: #d5d9e0; color: #8b94a3; cursor: not-allowed; }
+
+        .alerta { border-radius: 5px; padding: 11px 15px; margin: 12px 0; font-size: 0.86rem; font-weight: 500; }
+        .alerta-sucesso { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .alerta-erro    { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+        .alerta-info    { background: #e0f2fe; color: #075985; border: 1px solid #bae6fd; }
+
         .card {
             background: #fff;
             border: 1px solid #dde3ed;
@@ -244,6 +319,61 @@
         }
         window.addEventListener('DOMContentLoaded', atualizarVisibilidadeTunnel);
 
+        // ===== Administrador: atualização dos agentes =====
+        function agenteAlerta(mensagem, tipo) {
+            var box = document.getElementById('agente-alerta');
+            box.textContent = mensagem;
+            box.className = 'alerta alerta-' + tipo;
+            box.style.display = 'block';
+        }
+
+        function selecionarAgente() {
+            var arquivo = document.getElementById('pacote-agente').files[0];
+            var agente  = document.querySelector('input[name="agente_atualizacao"]:checked');
+            var email   = document.getElementById('email-agente').value;
+
+            document.getElementById('pacote-nome').textContent = arquivo
+                ? arquivo.name + ' (' + (arquivo.size / 1024 / 1024).toFixed(2) + ' MB)'
+                : 'Nenhum pacote selecionado';
+
+            document.getElementById('btn-enviar-agente').disabled = !(arquivo && agente && email);
+            document.getElementById('agente-alerta').style.display = 'none';
+        }
+
+        function enviarAtualizacaoAgente() {
+            var arquivo = document.getElementById('pacote-agente').files[0];
+            var agente  = document.querySelector('input[name="agente_atualizacao"]:checked');
+            var email   = document.getElementById('email-agente').value;
+            if (!arquivo || !agente || !email) return;
+
+            var botao = document.getElementById('btn-enviar-agente');
+            botao.disabled = true;
+            botao.textContent = 'Enviando…';
+            agenteAlerta('Enviando o pacote — pode levar alguns instantes.', 'info');
+
+            var dados = new FormData();
+            dados.append('agente', agente.value);
+            dados.append('email_destino', email);
+            dados.append('pacote', arquivo);
+
+            fetch('/admin/atualizar-agente', { method: 'POST', body: dados })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    agenteAlerta(d.mensagem, d.sucesso ? 'sucesso' : 'erro');
+                    if (d.sucesso) {
+                        document.getElementById('pacote-agente').value = '';
+                        document.getElementById('pacote-nome').textContent = 'Nenhum pacote selecionado';
+                    }
+                })
+                .catch(function(e) {
+                    agenteAlerta('Falha ao enviar: ' + e.message, 'erro');
+                })
+                .finally(function() {
+                    botao.textContent = 'Enviar atualização';
+                    selecionarAgente();
+                });
+        }
+
         function abrirSecao(evento, id) {
             document.querySelectorAll('.cfg-section').forEach(s => s.classList.remove('active'));
             document.querySelectorAll('.cfg-tab').forEach(b => b.classList.remove('active'));
@@ -451,6 +581,26 @@
     </script>
 </head>
 <body>
+    {% macro campo_secure(chave, rotulo, placeholder) %}
+        {% set campo = secure_valores.get(chave, {}) %}
+        <div class="field-group">
+            <label>{{ rotulo }}
+                {% if campo.sensivel %}
+                    {% if campo.preenchido %}
+                        <span class="tag-preenchido">preenchido</span>
+                    {% else %}
+                        <span class="tag-vazio">não configurado</span>
+                    {% endif %}
+                {% endif %}
+            </label>
+            <input type="{{ 'password' if campo.sensivel else 'text' }}"
+                   name="secure_{{ chave }}"
+                   value="{{ campo.valor }}"
+                   autocomplete="off"
+                   placeholder="{{ '•••••••• deixe em branco para manter' if campo.sensivel and campo.preenchido else placeholder }}">
+        </div>
+    {% endmacro %}
+
     <h2>Configurações</h2>
 
     <form id="config_form" method="post" action="/config">
@@ -460,6 +610,9 @@
             <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-geral')">Geral</button>
             <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-apis')">Requisição API</button>
             <button type="button" class="cfg-tab" onclick="abrirSecao(event, 'sec-oracle')">Oracle — Consultas SQL</button>
+            {% if admin_habilitado %}
+            <button type="button" class="cfg-tab cfg-tab-admin" onclick="abrirSecao(event, 'sec-admin')">&#128274; Administrador</button>
+            {% endif %}
         </div>
 
         <!-- ======== SEÇÃO: GERAL ======== -->
@@ -695,6 +848,117 @@
             </div>
 
         </div><!-- /sec-oracle -->
+
+        {% if admin_habilitado %}
+        <!-- ======== SEÇÃO: ADMINISTRADOR ======== -->
+        <div id="sec-admin" class="cfg-section">
+
+            <div class="admin-aviso">
+                &#9888; Estes campos ficam em <code>secure.properties</code> e não são versionados.
+                Senhas e chaves aparecem em branco por segurança — <strong>deixe em branco para manter o valor atual</strong>
+                ou digite um novo para substituir.
+            </div>
+
+            <!-- E-mail remetente -->
+            <div class="card">
+                <h4>E-mail remetente</h4>
+                <small>Conta usada para enviar as solicitações ao agente, os registros de execução e os anexos de exportação.</small>
+                <div class="grid-2" style="margin-top:14px">
+                    {{ campo_secure('email_envio', 'E-mail de envio', 'conta@gmail.com') }}
+                    {{ campo_secure('senha_envio', 'Senha de app', '') }}
+                </div>
+            </div>
+
+            <!-- Oracle -->
+            <div class="card">
+                <h4>Oracle — conexão com o banco</h4>
+                <small>Credenciais usadas pela aba <strong>Exportar Oracle</strong>.</small>
+                <div class="grid-2" style="margin-top:14px">
+                    {{ campo_secure('oracle_host', 'Host', 'qas1.exemplo.int') }}
+                    {{ campo_secure('oracle_port', 'Porta', '1521') }}
+                    {{ campo_secure('oracle_service', 'Service name', '') }}
+                    {{ campo_secure('oracle_user', 'Usuário', '') }}
+                    {{ campo_secure('oracle_password', 'Senha', '') }}
+                </div>
+            </div>
+
+            <!-- MDM -->
+            <div class="card">
+                <h4>MDM — API de clientes (Facade)</h4>
+                <small>Endpoint e credencial usados pela aba <strong>MDM</strong> para consultar, cadastrar e alterar clientes.</small>
+                <div class="grid-2" style="margin-top:14px">
+                    {{ campo_secure('mdm_api_url', 'URL da API', 'https://.../api-mdm-facade/v1/items') }}
+                    {{ campo_secure('mdm_api_schema', 'Schema', 'lmbr_client_preprod') }}
+                    {{ campo_secure('mdm_api_apikey', 'APIKEY', '') }}
+                </div>
+            </div>
+
+            <!-- Cloudflare -->
+            <div class="card">
+                <h4>Cloudflare Tunnel</h4>
+                <small>Preencher somente na máquina que executa o <code>cloudflared</code>. Usado pelo PinPad em modo túnel.</small>
+                <div class="grid-2" style="margin-top:14px">
+                    {{ campo_secure('cloudflared_credentials', 'Arquivo de credenciais', 'C:\\...\\tunnel.json') }}
+                    {{ campo_secure('cloudflared_tunnel_name', 'Nome do túnel', '') }}
+                </div>
+            </div>
+
+            <!-- Atualização dos agentes -->
+            <div class="card">
+                <h4>Atualização dos agentes</h4>
+                <small>Envia o pacote de instalação por e-mail para o agente escolhido. O agente reconhece
+                       a atualização pelo assunto da mensagem e faz a instalação.</small>
+
+                <div id="agente-alerta" style="display:none"></div>
+
+                <div class="agente-lista">
+                    {% for agente in agentes %}
+                    <label class="agente-opcao">
+                        <input type="radio" name="agente_atualizacao" value="{{ agente.id }}"
+                               onchange="selecionarAgente()">
+                        <span>
+                            <strong>{{ agente.nome }}</strong>
+                            <code>{{ agente.assunto }}</code>
+                        </span>
+                    </label>
+                    {% endfor %}
+                </div>
+
+                <div class="field-group" style="max-width:420px">
+                    <label>E-mail para o resultado da instalação</label>
+                    <select id="email-agente" onchange="selecionarAgente()">
+                        <option value="">Selecione…</option>
+                        {% for email in emails_destino %}
+                        <option value="{{ email }}">{{ email }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <!-- Fica fora do fluxo do formulário principal: o envio é feito por fetch -->
+                <input type="file" id="pacote-agente" accept=".zip,.exe"
+                       style="display:none" onchange="selecionarAgente()">
+
+                <div class="agente-acoes">
+                    <button type="button" class="btn-secondary" onclick="document.getElementById('pacote-agente').click()">
+                        Escolher pacote…
+                    </button>
+                    <span id="pacote-nome" class="pacote-nome">Nenhum pacote selecionado</span>
+                </div>
+
+                <button type="button" id="btn-enviar-agente" class="btn-enviar-agente"
+                        onclick="enviarAtualizacaoAgente()" disabled>
+                    Enviar atualização
+                </button>
+                <small style="display:block;margin-top:8px">
+                    Formatos aceitos: .zip e .exe — até {{ tamanho_maximo_mb }} MB.
+                    Executáveis dentro do ZIP são renomeados automaticamente (sufixo <code>.becpkg</code>)
+                    porque o Gmail bloqueia anexos com <code>.exe</code>/<code>.bat</code>; o agente desfaz a
+                    renomeação ao instalar.
+                </small>
+            </div>
+
+        </div><!-- /sec-admin -->
+        {% endif %}
 
         <!-- Barra de ações -->
         <div class="actions-bar">

@@ -20,6 +20,11 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+try:
+    from version import __version__ as AGENTE_VERSAO
+except ImportError:
+    AGENTE_VERSAO = 'desconhecida'
+
 CONFIG_FILE = os.path.join(BASE_DIR, 'agent.properties')
 CSV_LOG     = os.path.join(BASE_DIR, 'historico_envio_logs.csv')
 CSV_PARAM   = os.path.join(BASE_DIR, 'historico_parametrizacao.csv')
@@ -2154,6 +2159,418 @@ def processar_reiniciar_pdv(imap, num, corpo, props):
 # ---------------------------------------------------------------------------
 # Loop principal de leitura de e-mails
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Funcionalidade 8: Atualização automática do agente
+# ---------------------------------------------------------------------------
+# O BEC envia o pacote de instalação anexado a um e-mail [Atualizacao Agente].
+# O agente confere remetente, tamanho e SHA256, extrai o pacote e delega a troca
+# dos arquivos a um script externo — o próprio .exe está em uso e não pode se
+# sobrescrever. O script roda pelo Agendador de Tarefas (portanto fora da árvore
+# de processos do serviço, que seria encerrada junto com ele), para o serviço,
+# copia os arquivos, e reinicia. Se o serviço não voltar, desfaz pelo backup.
+SERVICO_NOME      = 'AgentExtratarLog'
+EXECUTAVEL_AGENTE = 'agent_extrator_log.exe'
+ATUALIZACAO_DIR   = os.path.join(BASE_DIR, 'atualizacao')
+PIDS_APLICADOS    = os.path.join(BASE_DIR, 'atualizacoes_aplicadas.txt')
+TAREFA_ATUALIZACAO = 'BEC_Atualiza_AgentExtratorLog'
+
+# O script de atualização grava o desfecho em resultado.txt e o agente, ao subir
+# com a nova versão, encontra o arquivo e responde por e-mail. É esse caminho —
+# e não o próprio script — que confirma qual build ficou de fato em execução.
+ARQUIVO_RESULTADO = 'resultado.txt'
+ARQUIVO_CONTEXTO  = 'contexto.txt'
+FLAG_RESULTADO_ENVIADO = 'resultado_enviado.flag'
+
+# Guardam a configuração da máquina: são mantidos como estão na atualização.
+PRESERVAR_NA_ATUALIZACAO = ('agent.properties',)
+
+
+def _sha256_arquivo(caminho):
+    import hashlib
+    h = hashlib.sha256()
+    with open(caminho, 'rb') as f:
+        for bloco in iter(lambda: f.read(65536), b''):
+            h.update(bloco)
+    return h.hexdigest()
+
+
+def _remetente_autorizado(msg, props, email_user):
+    """Só aceita pacote de remetentes conhecidos.
+
+    Padrão: a própria conta monitorada (o BEC envia de e para ela). Endereços
+    extras podem ser listados em atualizacao.remetentes no agent.properties.
+    """
+    from email.utils import parseaddr
+    remetente = parseaddr(msg.get('From', ''))[1].strip().lower()
+    autorizados = {(email_user or '').strip().lower()}
+    autorizados.update(
+        e.strip().lower()
+        for e in props.get('atualizacao.remetentes', '').split(',') if e.strip()
+    )
+    autorizados.discard('')
+    return remetente in autorizados, remetente
+
+
+def _extrair_anexo_zip(msg, destino):
+    """Grava o primeiro anexo .zip da mensagem em destino. Retorna o caminho ou None."""
+    for parte in msg.walk():
+        if parte.get_content_maintype() == 'multipart':
+            continue
+        nome = parte.get_filename()
+        if not nome:
+            continue
+        nome = decodifica_assunto(nome) if '=?' in nome else nome
+        if not nome.lower().endswith('.zip'):
+            continue
+        caminho = os.path.join(destino, os.path.basename(nome))
+        with open(caminho, 'wb') as f:
+            f.write(parte.get_payload(decode=True))
+        return caminho
+    return None
+
+
+def _restaurar_sufixo(pasta, sufixo):
+    """Desfaz a neutralização feita pelo BEC (ex.: nssm.exe.becpkg -> nssm.exe)."""
+    if not sufixo:
+        return 0
+    restaurados = 0
+    for raiz, _dirs, arquivos in os.walk(pasta):
+        for arquivo in arquivos:
+            if arquivo.endswith(sufixo):
+                origem = os.path.join(raiz, arquivo)
+                final  = os.path.join(raiz, arquivo[:-len(sufixo)])
+                os.replace(origem, final)
+                restaurados += 1
+    return restaurados
+
+
+def _pid_ja_aplicado(pid):
+    """Evita reinstalar o mesmo pacote caso o e-mail volte a ser lido."""
+    if not os.path.exists(PIDS_APLICADOS):
+        return False
+    with open(PIDS_APLICADOS, 'r', encoding='utf-8', errors='replace') as f:
+        return any(linha.strip().endswith(pid) for linha in f)
+
+
+def _registrar_pid_aplicado(pid, pacote):
+    with open(PIDS_APLICADOS, 'a', encoding='utf-8') as f:
+        f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S};{pacote};{pid}\n")
+
+
+def _gravar_contexto(pasta, dados):
+    """Guarda os dados da solicitação para o agente responder após o reinício."""
+    with open(os.path.join(pasta, ARQUIVO_CONTEXTO), 'w', encoding='utf-8') as f:
+        for chave, valor in dados.items():
+            f.write(f'{chave}={valor}\n')
+
+
+def _ler_chave_valor(caminho):
+    dados = {}
+    if not os.path.exists(caminho):
+        return dados
+    with open(caminho, 'r', encoding='utf-8', errors='replace') as f:
+        for linha in f:
+            linha = linha.strip()
+            if '=' in linha:
+                chave, valor = linha.split('=', 1)
+                dados[chave.strip()] = valor.strip()
+    return dados
+
+
+def enviar_resultados_atualizacao(props, email_user, email_pass):
+    """Responde por e-mail o desfecho das atualizações concluídas.
+
+    Roda na subida do agente: o script de atualização já terminou e deixou o
+    resultado gravado. Como quem envia é o processo recém-iniciado, a versão
+    informada é comprovadamente a que está em execução.
+    """
+    if not os.path.isdir(ATUALIZACAO_DIR):
+        return
+
+    for nome in sorted(os.listdir(ATUALIZACAO_DIR)):
+        pasta = os.path.join(ATUALIZACAO_DIR, nome)
+        arquivo_resultado = os.path.join(pasta, ARQUIVO_RESULTADO)
+        flag = os.path.join(pasta, FLAG_RESULTADO_ENVIADO)
+        if not os.path.isfile(arquivo_resultado) or os.path.exists(flag):
+            continue
+
+        try:
+            resultado = _ler_chave_valor(arquivo_resultado)
+            contexto  = _ler_chave_valor(os.path.join(pasta, ARQUIVO_CONTEXTO))
+
+            destino = contexto.get('Destino', '').strip()
+            if not destino:
+                log(f'[Atualizacao] Resultado de {nome} sem destino; e-mail não enviado.', 'warning')
+                open(flag, 'w').close()
+                continue
+
+            status = resultado.get('STATUS', 'DESCONHECIDO')
+            pid    = contexto.get('PID', nome)
+
+            corpo = (
+                f"PID: {pid}\n"
+                f"Agente: Agent Extrator Log\n"
+                f"Maquina: {os.environ.get('COMPUTERNAME', '')}\n"
+                f"Status: {status}\n"
+                f"VersaoInstalada: {AGENTE_VERSAO}\n"
+                f"VersaoAnterior: {contexto.get('VersaoAnterior', 'desconhecida')}\n"
+                f"Pacote: {contexto.get('Pacote', '')}\n"
+                f"Detalhe: {resultado.get('DETALHE', '')}\n"
+                f"ConcluidoEm: {resultado.get('DATAHORA', '')}\n"
+                f"SolicitadoPor: {contexto.get('Usuario', '')}\n"
+            )
+
+            assunto = f'[Resultado Atualizacao Agente] - [{status}] - [{pid}]'
+            log_atualizacao = os.path.join(pasta, 'atualizacao.log')
+            anexo = log_atualizacao if os.path.exists(log_atualizacao) else ''
+
+            if anexo:
+                enviar_email_com_anexo(email_user, email_pass, destino, assunto, corpo, anexo)
+            else:
+                enviar_email_texto(email_user, email_pass, destino, assunto, corpo)
+
+            open(flag, 'w').close()
+            log(f'[Atualizacao] Resultado {status} (PID={pid}) enviado para {destino}. '
+                f'Versão em execução: {AGENTE_VERSAO}')
+        except Exception as e:
+            log(f'[Atualizacao] Falha ao enviar resultado de {nome}: {e}', 'error')
+
+
+def _escrever_script_atualizacao(pasta, origem, pid):
+    """Gera o .bat que troca os arquivos com o serviço parado."""
+    backup    = os.path.join(pasta, 'backup')
+    log_bat   = os.path.join(pasta, 'atualizacao.log')
+    excluir   = os.path.join(pasta, 'nao_copiar.txt')
+    script    = os.path.join(pasta, 'aplicar_atualizacao.bat')
+    resultado = os.path.join(pasta, ARQUIVO_RESULTADO)
+
+    with open(excluir, 'w', encoding='ascii') as f:
+        for nome in PRESERVAR_NA_ATUALIZACAO:
+            f.write(nome + '\n')
+
+    conteudo = f"""@echo off
+setlocal enabledelayedexpansion
+set SERVICE={SERVICO_NOME}
+set INSTALL={BASE_DIR}
+set ORIGEM={origem}
+set BACKUP={backup}
+set LOG={log_bat}
+set EXCLUIR={excluir}
+set RESULTADO={resultado}
+set ERRO=0
+set STATUS=FALHA
+set DETALHE=Atualizacao interrompida antes de concluir.
+
+call :L "=== Atualizacao PID={pid} iniciada ==="
+
+:: ---- Para o servico ----
+call :L "Parando servico %SERVICE%..."
+sc stop %SERVICE% >nul 2>&1
+set /a T=0
+:aguarda_parada
+timeout /t 2 /nobreak >nul
+sc query %SERVICE% | findstr /i "STOPPED" >nul
+if !errorlevel! neq 0 (
+    set /a T+=1
+    if !T! lss 15 goto :aguarda_parada
+    call :L "[AVISO] Servico nao parou em 30s. Forcando encerramento."
+    taskkill /f /im {EXECUTAVEL_AGENTE} >nul 2>&1
+    timeout /t 3 /nobreak >nul
+)
+call :L "[OK] Servico parado."
+
+:: ---- Backup do que sera substituido ----
+if not exist "%BACKUP%" mkdir "%BACKUP%"
+xcopy "%INSTALL%\\*.exe"  "%BACKUP%\\" /Y /Q >nul 2>&1
+xcopy "%INSTALL%\\*.bat"  "%BACKUP%\\" /Y /Q >nul 2>&1
+call :L "[OK] Backup gravado em %BACKUP%"
+
+:: ---- Copia a nova versao (agent.properties e preservado) ----
+xcopy "%ORIGEM%\\*" "%INSTALL%\\" /E /Y /Q /EXCLUDE:%EXCLUIR% >> "%LOG%" 2>&1
+if !errorlevel! neq 0 (
+    call :L "[ERRO] Falha ao copiar os arquivos da nova versao."
+    set ERRO=1
+    set DETALHE=Falha ao copiar os arquivos da nova versao.
+    goto :restaurar
+)
+call :L "[OK] Arquivos da nova versao copiados."
+
+:: ---- Sobe o servico ----
+call :L "Iniciando servico..."
+sc start %SERVICE% >nul 2>&1
+set /a T=0
+:aguarda_inicio
+timeout /t 2 /nobreak >nul
+sc query %SERVICE% | findstr /i "RUNNING" >nul
+if !errorlevel! neq 0 (
+    set /a T+=1
+    if !T! lss 15 goto :aguarda_inicio
+    call :L "[ERRO] Servico nao entrou em execucao apos a atualizacao."
+    set ERRO=1
+    set DETALHE=Servico nao entrou em execucao com a nova versao.
+    goto :restaurar
+)
+call :L "[OK] Servico em execucao. Atualizacao concluida."
+set STATUS=SUCESSO
+set DETALHE=Nova versao instalada e servico em execucao.
+goto :fim
+
+:restaurar
+call :L "Restaurando versao anterior a partir do backup..."
+sc stop %SERVICE% >nul 2>&1
+timeout /t 5 /nobreak >nul
+taskkill /f /im {EXECUTAVEL_AGENTE} >nul 2>&1
+xcopy "%BACKUP%\\*" "%INSTALL%\\" /E /Y /Q >> "%LOG%" 2>&1
+sc start %SERVICE% >nul 2>&1
+timeout /t 5 /nobreak >nul
+sc query %SERVICE% | findstr /i "RUNNING" >nul
+if !errorlevel! equ 0 (
+    call :L "[OK] Versao anterior restaurada e servico em execucao."
+    set STATUS=REVERTIDO
+    set DETALHE=!DETALHE! Versao anterior restaurada e servico em execucao.
+) else (
+    call :L "[FALHA] Servico nao subiu nem apos a restauracao. Requer acao manual."
+    set STATUS=FALHA_CRITICA
+    set DETALHE=!DETALHE! Servico nao subiu nem apos a restauracao; requer acao manual.
+)
+
+:fim
+call :L "=== Atualizacao PID={pid} finalizada (STATUS=!STATUS!) ==="
+:: O agente le este arquivo ao subir e responde por e-mail com o resultado
+> "%RESULTADO%" echo STATUS=!STATUS!
+>> "%RESULTADO%" echo DETALHE=!DETALHE!
+>> "%RESULTADO%" echo DATAHORA=%DATE% %TIME%
+schtasks /delete /tn "{TAREFA_ATUALIZACAO}" /f >nul 2>&1
+exit /b !ERRO!
+
+:L
+echo [%DATE% %TIME%] %~1 >> "%LOG%"
+exit /b 0
+"""
+    with open(script, 'w', encoding='ascii', errors='replace') as f:
+        f.write(conteudo)
+    return script
+
+
+def _disparar_script(script):
+    """Executa o script fora da árvore de processos do serviço.
+
+    Pelo Agendador de Tarefas: se fosse filho do agente, o NSSM o encerraria
+    junto ao parar o serviço — que é justamente o primeiro passo do script.
+    """
+    import subprocess as _sp
+    criar = [
+        'schtasks', '/create', '/tn', TAREFA_ATUALIZACAO,
+        '/tr', f'"{script}"', '/sc', 'once', '/st', '00:00',
+        '/ru', 'SYSTEM', '/rl', 'HIGHEST', '/f',
+    ]
+    resultado = _sp.run(criar, capture_output=True, text=True, timeout=30)
+    if resultado.returncode == 0:
+        _sp.run(['schtasks', '/run', '/tn', TAREFA_ATUALIZACAO],
+                capture_output=True, text=True, timeout=30)
+        log('[Atualizacao] Script agendado e disparado via Agendador de Tarefas.')
+        return True
+
+    log(f'[Atualizacao] schtasks falhou ({resultado.stderr.strip()}); '
+        f'disparando processo desanexado.', 'warning')
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    _sp.Popen(['cmd', '/c', script],
+              creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+              close_fds=True)
+    return True
+
+
+def processar_atualizacao(imap, num, msg, corpo, props, email_user):
+    import shutil
+
+    pid     = extrair_campo(corpo, 'PID')
+    pacote  = extrair_campo(corpo, 'Pacote')
+    sha     = extrair_campo(corpo, 'SHA256').lower()
+    sufixo  = extrair_campo(corpo, 'SufixoNeutro')
+    destino = extrair_campo(corpo, 'Destino')
+    usuario = extrair_campo(corpo, 'Usuario')
+    tamanho_informado = extrair_campo(corpo, 'TamanhoBytes')
+
+    log(f'[Atualizacao] PID={pid} | Pacote={pacote} | Resultado para: {destino or "(não informado)"}')
+
+    # O e-mail é marcado como lido antes de qualquer coisa: o serviço será
+    # reiniciado no meio do processo e não pode reprocessar a mesma mensagem.
+    imap.store(num, '+FLAGS', '\\Seen')
+
+    # Tudo dentro do try: uma falha aqui não pode derrubar o ciclo e impedir o
+    # processamento das solicitações de log da mesma rodada.
+    try:
+        autorizado, remetente = _remetente_autorizado(msg, props, email_user)
+        if not autorizado:
+            log(f'[Atualizacao] Remetente não autorizado: {remetente}. Pacote ignorado.', 'error')
+            return False
+
+        if pid and _pid_ja_aplicado(pid):
+            log(f'[Atualizacao] PID {pid} já aplicado anteriormente. Ignorando.', 'warning')
+            return False
+
+        pasta = os.path.join(ATUALIZACAO_DIR, pid or datetime.now().strftime('%Y%m%d%H%M%S'))
+        shutil.rmtree(pasta, ignore_errors=True)
+        os.makedirs(pasta, exist_ok=True)
+
+        caminho_zip = _extrair_anexo_zip(msg, pasta)
+        if not caminho_zip:
+            log('[Atualizacao] E-mail sem anexo .zip. Nada a fazer.', 'error')
+            return False
+
+        tamanho = os.path.getsize(caminho_zip)
+        if tamanho_informado and str(tamanho) != tamanho_informado.strip():
+            log(f'[Atualizacao] Tamanho divergente: recebido {tamanho}, '
+                f'informado {tamanho_informado}. Pacote descartado.', 'error')
+            return False
+
+        if sha:
+            calculado = _sha256_arquivo(caminho_zip)
+            if calculado != sha:
+                log(f'[Atualizacao] SHA256 divergente. Esperado {sha}, '
+                    f'calculado {calculado}. Pacote descartado.', 'error')
+                return False
+            log('[Atualizacao] SHA256 conferido.')
+        else:
+            log('[Atualizacao] E-mail sem SHA256; seguindo sem verificação de integridade.', 'warning')
+
+        extraido = os.path.join(pasta, 'extraido')
+        os.makedirs(extraido, exist_ok=True)
+        with zipfile.ZipFile(caminho_zip) as z:
+            z.extractall(extraido)
+
+        restaurados = _restaurar_sufixo(extraido, sufixo)
+        if restaurados:
+            log(f'[Atualizacao] {restaurados} arquivo(s) renomeado(s) de volta (sufixo {sufixo}).')
+
+        if not os.path.exists(os.path.join(extraido, EXECUTAVEL_AGENTE)):
+            log(f'[Atualizacao] {EXECUTAVEL_AGENTE} não encontrado no pacote. '
+                f'Atualização abortada.', 'error')
+            return False
+
+        # Gravado antes de disparar: depois da troca o processo atual não existe
+        # mais, e é por este arquivo que a nova versão sabe para quem responder.
+        _gravar_contexto(pasta, {
+            'PID': pid,
+            'Destino': destino,
+            'Pacote': pacote,
+            'Usuario': usuario,
+            'VersaoAnterior': AGENTE_VERSAO,
+        })
+
+        script = _escrever_script_atualizacao(pasta, extraido, pid)
+        if pid:
+            _registrar_pid_aplicado(pid, pacote)
+
+        log('[Atualizacao] Pacote validado. O serviço será parado, atualizado e reiniciado.')
+        return _disparar_script(script)
+    except Exception as e:
+        log(f'[Atualizacao] Falha ao preparar a atualização: {e}', 'error')
+        return False
+
+
 def buscar_emails_processar():
     global _debug_mode
     props      = ler_properties(CONFIG_FILE)
@@ -2163,6 +2580,15 @@ def buscar_emails_processar():
         log('[DEBUG] Modo debug ativado')
     email_user = props.get('email')
     email_pass = props.get('senha')
+
+    # A cada ciclo, e não só na subida: o script de atualização confirma o serviço
+    # no ar e só então grava o resultado, alguns segundos DEPOIS de o agente já ter
+    # iniciado. Verificando só no start, esse resultado nunca seria enviado.
+    # Fica antes do IMAP para não depender da conexão com a caixa.
+    try:
+        enviar_resultados_atualizacao(props, email_user, email_pass)
+    except Exception as ex:
+        log(f'[Atualizacao] Erro ao enviar resultado pendente: {ex}', 'error')
 
     imap = imaplib.IMAP4_SSL('imap.gmail.com')
     imap.login(email_user, email_pass)
@@ -2215,6 +2641,14 @@ def buscar_emails_processar():
         elif '[PinPad]' in assunto:
             log(f'Tratando e-mail: {assunto}')
             processar_pinpad(imap, num, corpo, props, email_user, email_pass)
+
+        elif '[Atualizacao Agente]' in assunto:
+            log(f'Tratando e-mail: {assunto}')
+            if processar_atualizacao(imap, num, msg, corpo, props, email_user):
+                # O serviço será parado pelo script; encerra o laço para não
+                # processar outros e-mails no meio da troca de arquivos. Eles
+                # continuam não lidos e serão tratados após o reinício.
+                break
 
         else:
             log(f'Ignorando e-mail: {assunto}')
@@ -2327,7 +2761,14 @@ def _tunnel_pinpad_loop(props):
 def main():
     props     = ler_properties(CONFIG_FILE)
     intervalo = int(props.get('intervalo_minutos', 5))
-    log(f'Agente iniciado. Intervalo de verificação: {intervalo} minuto(s).')
+    log(f'Agente iniciado. Versão {AGENTE_VERSAO}. '
+        f'Intervalo de verificação: {intervalo} minuto(s).')
+
+    # Se o agente subiu logo após uma atualização, responde o resultado
+    try:
+        enviar_resultados_atualizacao(props, props.get('email'), props.get('senha'))
+    except Exception as ex:
+        log(f'[Atualizacao] Erro ao enviar resultado pendente: {ex}', 'error')
 
     if props.get('pinpad_modo_comunicacao', 'email') == 'tunnel':
         t = threading.Thread(target=_tunnel_pinpad_loop, args=(props,), daemon=True)

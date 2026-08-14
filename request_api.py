@@ -9,6 +9,8 @@ from flask import render_template, request, jsonify, send_file
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+from execucao import registrar_execucao
+
 logger = logging.getLogger('ExtratrorLogs')
 
 # Resolve o diretório base igual ao extrator_logs.py
@@ -215,6 +217,10 @@ def fazer_requisicao_api(app, ler_properties, config_file):
             'body': response.text
         }
         logger.info(f"API {nome_api} retornou status {response.status_code}")
+        registrar_execucao(props, 'Requisição API', detalhes={
+            'API': nome_api, 'Metodo': metodo, 'URL': url_final,
+            'StatusCode': response.status_code,
+        })
         return jsonify({'sucesso': True, 'retorno': retorno})
     except Exception as e:
         logger.error(f"Erro ao chamar API {nome_api}: {str(e)}")

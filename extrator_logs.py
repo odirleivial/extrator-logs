@@ -7,7 +7,9 @@ from email.mime.base import MIMEBase
 from email import encoders
 import oracledb, csv, subprocess
 from datetime import datetime
-from logger import logger
+from logger import logger, USUARIO_WINDOWS
+from execucao import registrar_execucao, gerar_pid
+from atualizacao_agente import obter_agentes, enviar_atualizacao, TAMANHO_MAXIMO_MB
 from parametrizacao_pdv import pagina_configurar_pdv, enviar_configuracao_pdv, verificar_configuracao_pdv, relatorio_parametrizacao, versao_pdv, reiniciar_pdv, fechar_pdv
 from request_api import (pagina_requisicao_api, fazer_requisicao_api, obter_apis,
                          gerar_retorno_download, baixar_retorno, enviar_retorno_email)
@@ -25,6 +27,11 @@ else:
 app = Flask(__name__,
             template_folder=os.path.join(BUNDLE_DIR, 'templates'),
             static_folder=os.path.join(BUNDLE_DIR, 'static'))
+
+# Teto do upload do pacote de atualização do agente (aba Administrador).
+# Uma folga sobre o limite do anexo permite que a validação devolva uma mensagem
+# clara em vez de o Flask cortar a requisição com 413.
+app.config['MAX_CONTENT_LENGTH'] = (TAMANHO_MAXIMO_MB + 5) * 1024 * 1024
 
 _img_bp = Blueprint('img', __name__,
                     static_folder=os.path.join(APP_DIR, 'img'),
@@ -102,6 +109,12 @@ PROP_SECTIONS = [
     ("# === Log - nível de detalhe e rotação do arquivo log/extrator_logs.log ===\n"
      "# log.level: DEBUG | INFO | WARNING | ERROR | CRITICAL",
      lambda k: k.startswith('log.')),
+    ("# === Registro de execução (e-mail por funcionalidade; true/false) ===",
+     lambda k: k == 'registro_execucao'),
+    ("# === Administrador - exibe a aba com as configurações sensíveis (true/false) ===",
+     lambda k: k == 'admin_habilitado'),
+    ("# === Atualização de agentes - assunto do e-mail que leva o pacote ===",
+     lambda k: k == 'agentes_order' or k.startswith('agente.')),
     ("# === Abas - controla quais abas ficam visíveis na interface (true/false) ===",
      lambda k: k.startswith('tab.')),
     ("# === E-mails - lista de destinatários disponíveis ===",
@@ -160,6 +173,80 @@ def salvar_properties(arquivo, props):
         logger.info(f"Arquivo {arquivo} salvo com sucesso")
     except Exception as e:
         logger.error(f"Erro ao salvar arquivo {arquivo}: {str(e)}")
+
+# Propriedades introduzidas por novas versões do BEC e seus valores padrão.
+# O instalador usa "onlyifdoesntexist" no config.properties, então ao atualizar a
+# aplicação o arquivo do usuário é preservado — e ficaria sem as chaves novas.
+# Esta migração roda no start: cadastra o que falta com o padrão e nunca
+# sobrescreve um valor já existente.
+PROPS_PADRAO = {
+    'admin_habilitado': 'false',
+    'registro_execucao': 'true',
+    'agentes_order': 'extrator,sp',
+    'agente.extrator.nome': 'Agent Extrator Log',
+    'agente.extrator.assunto': '[Atualizacao Agente]',
+    'agente.sp.nome': 'Server Agent SP',
+    'agente.sp.assunto': '[Atualizacao Agente SP]',
+    'log.level': 'INFO',
+    'log.console_level': 'INFO',
+    'log.max_size_mb': '5',
+    'log.backup_count': '3',
+}
+
+
+def garantir_props_padrao():
+    """Cadastra no config.properties as chaves novas que ainda não existem."""
+    props = ler_properties(CONFIG_FILE)
+    if not props:
+        return  # arquivo ausente/ilegível — nada a migrar
+    faltando = {k: v for k, v in PROPS_PADRAO.items() if k not in props}
+    if not faltando:
+        return
+    props.update(faltando)
+    salvar_properties(CONFIG_FILE, props)
+    logger.info(f"Propriedades novas cadastradas com valor padrão: {', '.join(sorted(faltando))}")
+
+
+def salvar_secure_campos(arquivo, valores):
+    """Atualiza chaves específicas do secure.properties preservando o restante.
+
+    Mantém comentários, ordem e as demais chaves (inclusive as api.*.apikey, que
+    têm gravação própria). Chaves ainda inexistentes são acrescentadas ao final.
+    Valor None significa "manter o que já está gravado" — usado nos campos
+    sensíveis que a tela exibe em branco.
+    """
+    try:
+        pendentes = {k: v for k, v in valores.items() if v is not None}
+        linhas = []
+        if os.path.exists(arquivo):
+            with open(arquivo, 'r', encoding='utf-8') as f:
+                for line in f:
+                    linha = line.rstrip('\n')
+                    stripped = linha.strip()
+                    if stripped and not stripped.startswith('#') and '=' in stripped:
+                        chave = stripped.split('=', 1)[0].strip()
+                        if chave in pendentes:
+                            linhas.append(f'{chave}={pendentes.pop(chave)}')
+                            continue
+                    linhas.append(linha)
+
+        if pendentes:
+            while linhas and linhas[-1].strip() == '':
+                linhas.pop()
+            linhas.append('')
+            for chave in sorted(pendentes):
+                linhas.append(f'{chave}={pendentes[chave]}')
+
+        with open(arquivo, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(linhas) + '\n')
+        logger.info(f"Configurações sensíveis atualizadas ({len(valores)} campo(s))")
+    except Exception as e:
+        logger.error(f"Erro ao salvar {arquivo}: {str(e)}")
+        raise
+
+
+garantir_props_padrao()
+
 
 def converter_data_para_oracle(data_ddmmyyyy):
     """Converte DD/MM/YYYY para YYYYMMDD"""
@@ -508,6 +595,40 @@ def converterParaArray(valor):
         return [v.strip() for v in valor.split(',') if v.strip()]
     return valor if isinstance(valor, list) else []
 
+
+# Campos do secure.properties editáveis na aba Administrador.
+# sensivel=True: a tela nunca exibe o valor gravado; em branco = manter o atual.
+CAMPOS_SECURE = [
+    ('email_envio',             False),
+    ('senha_envio',             True),
+    ('oracle_host',             False),
+    ('oracle_port',             False),
+    ('oracle_service',          False),
+    ('oracle_user',             False),
+    ('oracle_password',         True),
+    ('mdm_api_url',             False),
+    ('mdm_api_schema',          False),
+    ('mdm_api_apikey',          True),
+    ('cloudflared_credentials', False),
+    ('cloudflared_tunnel_name', False),
+]
+
+
+def _campos_secure_do_form(form):
+    """Monta o dict a gravar no secure.properties a partir do formulário.
+
+    Campos sensíveis deixados em branco viram None (mantém o valor atual), pois a
+    tela os exibe vazios — salvar a string vazia apagaria a credencial.
+    """
+    valores = {}
+    for chave, sensivel in CAMPOS_SECURE:
+        campo = f'secure_{chave}'
+        if campo not in form:
+            continue
+        valor = form.get(campo, '').strip()
+        valores[chave] = None if (sensivel and not valor) else valor
+    return valores
+
 @app.route('/config', methods=['GET', 'POST'])
 def config():
     props = ler_properties(CONFIG_FILE)  # apenas props editáveis
@@ -608,6 +729,12 @@ def config():
 
         salvar_properties(CONFIG_FILE, props)
         salvar_apikeys_secure(SECURE_FILE, apikeys)
+
+        # Aba Administrador — só grava quando a flag está ativa, para que um POST
+        # forjado não altere credenciais em instalações sem a aba.
+        if props.get('admin_habilitado', 'false').strip().lower() == 'true':
+            salvar_secure_campos(SECURE_FILE, _campos_secure_do_form(request.form))
+
         return redirect('/config?saved=1')
 
     # GET – preparar dados (somente props editáveis para o formulário)
@@ -617,6 +744,19 @@ def config():
 
     # APIs — mescla config + secure para exibir a apikey (mascarada na tela) na manutenção
     apis = obter_apis(ler_config_completo())
+
+    # Aba Administrador — valores do secure.properties. Os sensíveis não vão para
+    # a tela: só informamos se já existe algo gravado, para orientar o preenchimento.
+    admin_habilitado = props.get('admin_habilitado', 'false').strip().lower() == 'true'
+    secure_props = ler_properties(SECURE_FILE) if admin_habilitado else {}
+    secure_valores = {}
+    for chave, sensivel in CAMPOS_SECURE:
+        atual = secure_props.get(chave, '')
+        secure_valores[chave] = {
+            'valor': '' if sensivel else atual,
+            'sensivel': sensivel,
+            'preenchido': bool(atual),
+        }
 
     return render_template(
         'config.html',
@@ -628,9 +768,34 @@ def config():
         emails_destino_lista=emails_destino_lista,
         apis=apis,
         config_props=props,
+        admin_habilitado=admin_habilitado,
+        secure_valores=secure_valores,
+        agentes=obter_agentes(props) if admin_habilitado else [],
+        tamanho_maximo_mb=TAMANHO_MAXIMO_MB,
+        emails_destino=converterParaArray(props.get('emails_destino', '')),
     )
 
        
+
+@app.route('/admin/atualizar-agente', methods=['POST'])
+def admin_atualizar_agente():
+    """Envia o pacote de atualização ao agente selecionado (aba Administrador)."""
+    props = ler_config_completo()
+    if props.get('admin_habilitado', 'false').strip().lower() != 'true':
+        logger.warning("Tentativa de atualizar agente com a aba Administrador desativada")
+        return jsonify({'sucesso': False, 'mensagem': 'Aba Administrador não habilitada.'}), 403
+
+    payload, status = enviar_atualizacao(props, request.form, request.files, enviar_email_com_anexos)
+    return jsonify(payload), status
+
+
+@app.errorhandler(413)
+def _upload_muito_grande(_e):
+    return jsonify({
+        'sucesso': False,
+        'mensagem': f'Arquivo maior que o limite de {TAMANHO_MAXIMO_MB} MB por e-mail.'
+    }), 413
+
 
 def _parametros_oracle_export(form):
     """Lê e valida os parâmetros comuns às ações de exportação Oracle (gerar/baixar/e-mail)."""
@@ -712,6 +877,14 @@ def oracle_export_gerar():
                 'arquivos': [],
                 'mensagem': 'Nenhuma consulta selecionada retornou dados. Nenhum arquivo foi gerado.'
             })
+
+        registrar_execucao(ler_config_completo(), 'Exportar Oracle - Download', detalhes={
+            'Consultas': ', '.join(params['consultas']),
+            'Loja': params['loja'], 'PDV': params['pdv'],
+            'NSU': params['nsu'], 'Data': params['data'],
+            'Formato': params['formato'],
+            'Arquivos': ', '.join(os.path.basename(c) for c in caminhos),
+        })
         return jsonify({'sucesso': True, 'arquivos': [os.path.basename(c) for c in caminhos]})
     except Exception as e:
         logger.error(f"Erro na exportação Oracle: {str(e)}")
@@ -756,6 +929,12 @@ def oracle_export_email():
             email_destino, assunto, corpo_txt, corpo_html, caminhos
         )
         logger.info(f"E-mail de exportação Oracle enviado para {email_destino} ({len(caminhos)} arquivo(s) anexado(s))")
+        registrar_execucao(props, 'Exportar Oracle - E-mail', pid, {
+            'Consultas': ', '.join(params['consultas']),
+            'Loja': params['loja'], 'PDV': params['pdv'],
+            'NSU': params['nsu'], 'Data': params['data'],
+            'Formato': params['formato'], 'Destino': email_destino,
+        })
         return jsonify({'sucesso': True, 'mensagem': f'E-mail enviado com sucesso para {email_destino}!'})
     except Exception as e:
         logger.error(f"Erro ao enviar exportação Oracle por e-mail: {str(e)}")
@@ -925,11 +1104,6 @@ def montar_email_exportacao_oracle(params, status_consultas, caminhos_arquivos, 
     return corpo_txt, corpo_html
 
 
-def gerar_pid(tamanho=10):
-    caracteres = string.ascii_letters + string.digits
-    return ''.join(random.choice(caracteres) for _ in range(tamanho))
-
-
 @app.route('/solicitar', methods=['POST'])
 def solicitar():
     props = ler_config_completo()
@@ -956,18 +1130,28 @@ def solicitar():
     if loja == 'SERVERS_EP_SP':
         # Logs de servidores extraídos pelo Server Agent SP (sem Loja/PDV no corpo)
         assunto = f"[Solicitação Log SP] - [{pid}]"
-        corpo = f"PID: {pid}\nDestino: {email_destino}\nLogs: {','.join(logs)}\nData: {data_logs}"
+        corpo = f"PID: {pid}\nUsuario: {USUARIO_WINDOWS}\nDestino: {email_destino}\nLogs: {','.join(logs)}\nData: {data_logs}"
     elif loja == 'server_152':
         assunto = f"[Solicitação linx-webservices] - [{pid}]"
-        corpo = f"PID: {pid}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: linx-webservices\nData: {data_logs}"
+        corpo = f"PID: {pid}\nUsuario: {USUARIO_WINDOWS}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: linx-webservices\nData: {data_logs}"
     else:
         assunto = f"[Solicitação Log] - [{pid}]"
-        corpo = f"PID: {pid}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: {', '.join(logs)}\nData: {data_logs}"
+        corpo = f"PID: {pid}\nUsuario: {USUARIO_WINDOWS}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: {', '.join(logs)}\nData: {data_logs}"
 
     try:
         remetente = props.get('email_envio', '')
         enviar_email_gmail(remetente, props.get('senha_envio', ''), remetente, assunto, corpo)
         logger.info(f"Solicitação enviada com sucesso. PID: {pid}")
+
+        # O Server Agent SP roda em outra rede e não alimenta o fluxo de registro
+        # do agente principal — a execução é registrada por e-mail à parte.
+        if loja == 'SERVERS_EP_SP':
+            registrar_execucao(props, 'Solicitar Logs SP', pid, {
+                'Logs': ','.join(logs),
+                'Data': data_logs,
+                'Destino': email_destino,
+            })
+
         return jsonify({'sucesso': True, 'mensagem': f"Solicitação enviada com sucesso! PID: {pid}", 'pid': pid})
     except Exception as e:
         logger.error(f"Erro ao enviar solicitação: {str(e)}")
@@ -1074,6 +1258,10 @@ def pinpad_comando():
         try:
             sucesso, saida = _executar_pinpad_direto(comando, porta)
             logger.info(f"PinPad direto [{comando}] -> {porta}: {saida}")
+            registrar_execucao(props, 'PinPad', detalhes={
+                'Comando': comando, 'Porta': porta, 'Modo': 'direto',
+                'Resultado': 'sucesso' if sucesso else 'falha',
+            })
             mensagem = saida or f'Comando [{comando}] enviado para {porta}'
             return jsonify({'sucesso': sucesso, 'mensagem': mensagem})
         except subprocess.TimeoutExpired:
@@ -1105,12 +1293,16 @@ def pinpad_comando():
             return jsonify({'sucesso': False, 'mensagem': f'Erro ao enviar comando ao relay (HTTP {status}). Verifique a URL do Worker.'}), 500
 
         logger.info(f"[Worker] Comando [{comando}] enviado ao relay. PID={pid}")
+        registrar_execucao(props, 'PinPad', pid, {
+            'Comando': comando, 'Porta': porta, 'Modo': 'tunnel',
+            'Loja': loja, 'PDV': pdv_id,
+        })
         return jsonify({'sucesso': True, 'mensagem': f'Comando [{comando}] enviado! O dispositivo deve responder em instantes.'})
     else:
         # Envia email para o agente extrator executar remotamente
         pid     = gerar_pid()
         assunto = f"[PinPad] - [{pid}]"
-        corpo   = f"PID: {pid}\nComando: {comando}\nPorta: {porta}"
+        corpo   = f"PID: {pid}\nUsuario: {USUARIO_WINDOWS}\nComando: {comando}\nPorta: {porta}"
         try:
             remetente = props.get('email_envio', '')
             enviar_email_gmail(remetente, props.get('senha_envio', ''), remetente, assunto, corpo)

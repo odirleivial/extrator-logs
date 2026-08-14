@@ -10,24 +10,55 @@
 
 $ErrorActionPreference = 'Continue'
 
-$AGENT_VERSION   = '2.1.0'
 $ASSUNTO_GATILHO = 'Log SP'   # casa com "[Solicitação Log SP]" sem depender de acentuacao
 
 if ($PSScriptRoot) { $BASE_DIR = $PSScriptRoot } else { $BASE_DIR = (Get-Location).Path }
+
+# Versao vem de version.ps1 (mesmo padrao do version.py do BEC e do extrator).
+# O fallback cobre instalacoes antigas, anteriores ao arquivo de versionamento.
+$AGENT_VERSION = '0.0.0'
+$_arqVersao = Join-Path $BASE_DIR 'version.ps1'
+if (Test-Path -LiteralPath $_arqVersao) {
+    . $_arqVersao
+    if ($AGENTE_VERSAO) { $AGENT_VERSION = $AGENTE_VERSAO }
+}
 $CONFIG_FILE = Join-Path $BASE_DIR 'agent.properties'
 $CSV_LOG     = Join-Path $BASE_DIR 'historico_envio_logs.csv'
 $LOG_DIR     = Join-Path $BASE_DIR 'log'
 if (-not (Test-Path $LOG_DIR)) { New-Item -ItemType Directory -Path $LOG_DIR | Out-Null }
 
 $LOG_FILE_BASE = 'server_agent_sp'
-$script:LogData = $null
+$script:LogData       = $null
+$script:LogNivelMin   = 1     # INFO por padrao; ajustado no start por log.level (agent.properties)
+$script:LogIdentidade = ''    # identidade sob a qual o agente roda (resolvida no start)
+$script:CtxUsuario    = ''    # usuario que pediu a operacao (campo Usuario do e-mail)
+$script:CtxPid        = ''    # PID da operacao em processamento
+
+# Niveis: quanto maior, mais severo. Uma linha so e gravada quando seu nivel e
+# maior ou igual ao configurado em log.level.
+function ConvertTo-NivelNum {
+    param([string]$Nivel)
+    switch (($Nivel + '').ToUpper()) {
+        'DEBUG'   { 0 }
+        'INFO'    { 1 }
+        'WARN'    { 2 }
+        'WARNING' { 2 }
+        'ERROR'   { 3 }
+        default   { 1 }
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Log diario: o dia corrente vai no arquivo fixo; na virada do dia o arquivo e
 # renomeado para server_agent_sp_<data-anterior>.log
+#
+# Cada linha carrega [usuario] e, durante o processamento de uma solicitacao,
+# tambem o PID: [usuario | PID]. Fora de uma solicitacao o usuario e a
+# identidade sob a qual o agente roda (ex.: SYSTEM).
 # ---------------------------------------------------------------------------
 function Escrever-Log {
     param([string]$Mensagem, [string]$Nivel = 'INFO')
+    if ((ConvertTo-NivelNum $Nivel) -lt $script:LogNivelMin) { return }
 
     $agora = Get-Date
     $hoje  = $agora.ToString('yyyy-MM-dd')
@@ -54,7 +85,12 @@ function Escrever-Log {
         $script:LogData = $hoje
     }
 
-    $linha = "$($agora.ToString('yyyy-MM-dd HH:mm:ss')) [$Nivel] $Mensagem"
+    $usuario = if ($script:CtxUsuario) { $script:CtxUsuario } else { $script:LogIdentidade }
+    if ($script:CtxPid) { $ctx = "[$usuario | $($script:CtxPid)] " }
+    elseif ($usuario)   { $ctx = "[$usuario] " }
+    else                { $ctx = '' }
+
+    $linha = "$($agora.ToString('yyyy-MM-dd HH:mm:ss')) $ctx[$Nivel] $Mensagem"
     Write-Host $linha
     # Sem permissao de escrita, segue apenas com saida no console em vez de abortar
     try { Add-Content -Path $arquivoFixo -Value $linha -Encoding UTF8 } catch { }
@@ -188,8 +224,8 @@ function Get-CorpoTexto {
 }
 
 # ---------------------------------------------------------------------------
-# Formato de nomenclatura dos logs
-#   {texto}  -> parte fixa       [tokens] -> data (yyyy, yy, mm, dd)
+# Formato de nomenclatura dos logs — ver Resolver-FormatoLog mais abaixo, que
+# e usado tanto pelos logs do dia quanto pelos historicos.
 # ---------------------------------------------------------------------------
 function Resolver-TokensData {
     param([string]$Tokens, [datetime]$Data)
@@ -206,21 +242,6 @@ function Resolver-TokensData {
         elseif ($t2 -eq 'ss')   { $resultado += $Data.ToString('ss');   $i += 2 }
         else                    { $resultado += $Tokens[$i];            $i += 1 }
     }
-    return $resultado
-}
-
-function Resolver-Formato {
-    param([string]$Formato, [datetime]$Data = (Get-Date))
-    $regex = [regex]'\{([^}]*)\}|\[([^\]]*)\]'
-    $resultado = ''
-    $pos = 0
-    foreach ($m in $regex.Matches($Formato)) {
-        $resultado += $Formato.Substring($pos, $m.Index - $pos)
-        if ($m.Groups[1].Success) { $resultado += $m.Groups[1].Value }
-        else { $resultado += (Resolver-TokensData $m.Groups[2].Value $Data) }
-        $pos = $m.Index + $m.Length
-    }
-    $resultado += $Formato.Substring($pos)
     return $resultado
 }
 
@@ -351,11 +372,12 @@ function Token-EhData {
     return ($c -ne '' -and $RE_TOKEN_SO_DATA.IsMatch($c) -and $c -match '[ymd]')
 }
 
-function Resolver-FormatoHistorico {
+function Resolver-FormatoLog {
     <#  Resolve o formato para o nome (ou padrao com curinga) do dia informado.
+        Vale para os logs do dia e para os historicos.
         Ex.: '{lgComandosSQL_}[yyyymmdd].txt'      -> 'lgComandosSQL_20260803.txt'
              '{linx-webservices_}[yyyy-mm-dd](xxx).zip' -> 'linx-webservices_2026-08-03*.zip'  #>
-    param([string]$Formato, [datetime]$Data, [string]$Loja = '', [string]$Pdv = '')
+    param([string]$Formato, [datetime]$Data = (Get-Date), [string]$Loja = '', [string]$Pdv = '')
 
     $resultado = ''
     $pos = 0
@@ -418,33 +440,38 @@ function Descrever-Itens {
 }
 
 function Copiar-Pastas {
-    <#  Copia as pastas para a area de montagem do zip. A mesma pasta nao e
-        copiada duas vezes: quando outro log ja a incluiu, apenas registra.  #>
-    param($Itens, [string]$Staging, [hashtable]$Incluidas)
+    <#  Copia as pastas para a area de montagem do zip, sob uma subpasta com o
+        nome do log — do contrario o anexo traria so pastas chamadas com a data,
+        sem indicar de qual log vieram. A mesma pasta de origem nao e copiada
+        duas vezes: quando outro log ja a incluiu, apenas registra.  #>
+    param($Itens, [string]$Log, [string]$Staging, [hashtable]$Incluidas)
 
     $descricoes = @()
     foreach ($pasta in $Itens) {
         $chave = $pasta.FullName.TrimEnd('\').ToLower()
         if ($Incluidas.ContainsKey($chave)) {
             Escrever-Log "Pasta ja incluida por outro log - nao sera compactada de novo: $($pasta.FullName)"
-            $descricoes += "$($pasta.FullName) (ja no anexo em $($Incluidas[$chave])/)"
+            $descricoes += "$($pasta.FullName) (ja no anexo em $($Incluidas[$chave]))"
             continue
         }
 
-        # Pastas de logs diferentes costumam ter o mesmo nome (todas sao a data),
-        # entao desempata com sufixo numerico dentro do zip.
+        $raizLog = Join-Path $Staging $Log
+        New-Item -ItemType Directory -Path $raizLog -Force | Out-Null
+
+        # Desempate defensivo: duas pastas de origem com o mesmo nome dentro do
+        # mesmo log se sobrescreveriam sem isto.
         $nomeDest = $pasta.Name
         $n = 2
-        while (Test-Path -LiteralPath (Join-Path $Staging $nomeDest)) {
+        while (Test-Path -LiteralPath (Join-Path $raizLog $nomeDest)) {
             $nomeDest = "$($pasta.Name)_$n"
             $n++
         }
 
-        $destino = Join-Path $Staging $nomeDest
+        $destino = Join-Path $raizLog $nomeDest
         Copy-Item -LiteralPath $pasta.FullName -Destination $destino -Recurse -Force -ErrorAction Stop
         $qtd = @(Get-ChildItem -LiteralPath $destino -Recurse -File -Force -ErrorAction SilentlyContinue).Count
-        Escrever-Log "Pasta incluida no anexo: $($pasta.FullName) -> $nomeDest/ ($qtd arquivo(s))"
-        $Incluidas[$chave] = $nomeDest
+        Escrever-Log "Pasta incluida no anexo: $($pasta.FullName) -> $Log/$nomeDest/ ($qtd arquivo(s))"
+        $Incluidas[$chave] = "$Log/$nomeDest/"
         $descricoes += $pasta.FullName
     }
     return ($descricoes -join ' | ')
@@ -463,9 +490,11 @@ function Resolver-LogHistorico {
     if (-not $tipo) { $tipo = 'arquivo' }
 
     return [pscustomobject]@{
-        Base   = $base.TrimEnd('\', '/')
+        # O caminho tambem passa pelo resolvedor: ha logs cuja data esta na
+        # PASTA e nao no nome do arquivo (ex.: ...\logsTesouraria\[yyyymmdd]).
+        Base   = (Resolver-FormatoLog $base $Data).TrimEnd('\', '/')
         Tipo   = $tipo.Trim().ToLower()
-        Padrao = Resolver-FormatoHistorico $formato $Data
+        Padrao = Resolver-FormatoLog $formato $Data
     }
 }
 
@@ -768,9 +797,11 @@ function Processar-Solicitacao {
                     $arquivos += [pscustomobject]@{ nome = $item; caminho = '-'; status = 'sem_config' }
                     continue
                 }
-                $caminhoBase = $caminhoBase.TrimEnd('\', '/')
-                $padrao      = Resolver-Formato $formato $dataRef
-                $tipo        = 'arquivo'
+                $tipo = $Props["log.$item.tipo"]
+                if (-not $tipo) { $tipo = 'arquivo' }
+                $tipo        = $tipo.Trim().ToLower()
+                $caminhoBase = (Resolver-FormatoLog $caminhoBase $dataRef).TrimEnd('\', '/')
+                $padrao      = Resolver-FormatoLog $formato $dataRef
             }
 
             # Autentica uma vez por share antes do primeiro acesso
@@ -793,7 +824,7 @@ function Processar-Solicitacao {
 
             try {
                 if ($tipo -eq 'pasta') {
-                    $descricao = Copiar-Pastas $itens $staging $pastasIncluidas
+                    $descricao = Copiar-Pastas $itens $item $staging $pastasIncluidas
                 } else {
                     # Subpasta por log evita colisao entre logs cujo arquivo tem
                     # o mesmo nome (csi_ws-safe e csi_safe-retaguarda, por ex.)
@@ -844,6 +875,461 @@ function Processar-Solicitacao {
 # ---------------------------------------------------------------------------
 # Ciclo: le a caixa e processa as solicitacoes
 # ---------------------------------------------------------------------------
+# ===========================================================================
+# Atualizacao automatica (espelha o Agent Extrator Log)
+#
+# O BEC envia o pacote anexado a um e-mail [Atualizacao Agente SP]. O agente
+# confere remetente, tamanho e SHA256, extrai, desfaz a neutralizacao feita
+# pelo BEC (o Gmail recusa .ps1/.exe/.bat mesmo dentro de zip) e delega a troca
+# dos arquivos a um script externo, disparado pelo Agendador de Tarefas — se
+# fosse filho do agente, seria encerrado junto com o servico que ele mesmo para.
+#
+# Particularidade desta versao: os arquivos vindos do zip chegam marcados como
+# "da internet" e a politica RemoteSigned recusaria o .ps1. Por isso o
+# Unblock-File e obrigatorio, antes e depois da copia.
+# ===========================================================================
+$ASSUNTO_ATUALIZACAO   = 'Atualizacao Agente SP'
+$SERVICO_NOME_SP       = 'ServerAgentSP'
+$SCRIPT_AGENTE_SP      = 'server_agent_sp.ps1'
+$ATUALIZACAO_DIR       = Join-Path $BASE_DIR 'atualizacao'
+$PIDS_APLICADOS        = Join-Path $BASE_DIR 'atualizacoes_aplicadas.txt'
+$TAREFA_ATUALIZACAO_SP = 'BEC_Atualiza_ServerAgentSP'
+$ARQUIVO_RESULTADO     = 'resultado.txt'
+$ARQUIVO_CONTEXTO      = 'contexto.txt'
+$FLAG_RESULTADO        = 'resultado_enviado.flag'
+# Guardam a configuracao da maquina: nunca sao sobrescritos na atualizacao
+$PRESERVAR_ATUALIZACAO = @('agent.properties')
+
+function Get-Sha256Arquivo {
+    param([string]$Caminho)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $fs  = [System.IO.File]::OpenRead($Caminho)
+    try   { return (($sha.ComputeHash($fs) | ForEach-Object { $_.ToString('x2') }) -join '') }
+    finally { $fs.Dispose(); $sha.Dispose() }
+}
+
+function Get-AnexoZip {
+    <# Grava o primeiro anexo .zip da mensagem bruta. Retorna o caminho ou ''. #>
+    param([string]$Raw, [string]$Destino)
+
+    $idx = $Raw.IndexOf("`r`n`r`n")
+    if ($idx -lt 0) { return '' }
+    $cabecalho = $Raw.Substring(0, $idx)
+    if ($cabecalho -notmatch '(?i)boundary="?([^";\s]+)"?') { return '' }
+    $boundary = $matches[1]
+
+    foreach ($parte in ($Raw -split [regex]::Escape("--$boundary"))) {
+        if ($parte -notmatch '(?i)filename="?([^"\r\n;]+\.zip)"?') { continue }
+        $nome = [System.IO.Path]::GetFileName($matches[1].Trim())
+
+        $pi = $parte.IndexOf("`r`n`r`n")
+        if ($pi -lt 0) { continue }
+        $conteudo = $parte.Substring($pi + 4) -replace '\s', ''
+        if (-not $conteudo) { continue }
+
+        try {
+            $bytes = [Convert]::FromBase64String($conteudo)
+        } catch {
+            Escrever-Log "[Atualizacao] Anexo em base64 invalido: $($_.Exception.Message)" 'ERROR'
+            continue
+        }
+        $caminho = Join-Path $Destino $nome
+        [System.IO.File]::WriteAllBytes($caminho, $bytes)
+        return $caminho
+    }
+    return ''
+}
+
+function Restaurar-SufixoNeutro {
+    param([string]$Pasta, [string]$Sufixo)
+    if (-not $Sufixo) { return 0 }
+    $n = 0
+    foreach ($item in (Get-ChildItem -LiteralPath $Pasta -Recurse -File)) {
+        if ($item.Name.EndsWith($Sufixo)) {
+            $final = $item.FullName.Substring(0, $item.FullName.Length - $Sufixo.Length)
+            Move-Item -LiteralPath $item.FullName -Destination $final -Force
+            $n++
+        }
+    }
+    return $n
+}
+
+function Gravar-ChaveValor {
+    param([string]$Caminho, [hashtable]$Dados)
+    $linhas = foreach ($k in $Dados.Keys) { "$k=$($Dados[$k])" }
+    Set-Content -LiteralPath $Caminho -Value $linhas -Encoding UTF8
+}
+
+function Ler-ChaveValor {
+    param([string]$Caminho)
+    $dados = @{}
+    if (-not (Test-Path -LiteralPath $Caminho)) { return $dados }
+    foreach ($linha in (Get-Content -LiteralPath $Caminho -ErrorAction SilentlyContinue)) {
+        if ($linha -match '^\s*([^=]+)=(.*)$') { $dados[$matches[1].Trim()] = $matches[2].Trim() }
+    }
+    return $dados
+}
+
+function Test-PidJaAplicado {
+    # Nao usar $Pid como nome de parametro: e variavel automatica somente-leitura
+    param([string]$PidAtualizacao)
+    if (-not $PidAtualizacao -or -not (Test-Path -LiteralPath $PIDS_APLICADOS)) { return $false }
+    foreach ($linha in (Get-Content -LiteralPath $PIDS_APLICADOS)) {
+        if ($linha.Trim().EndsWith($PidAtualizacao)) { return $true }
+    }
+    return $false
+}
+
+function Escrever-ScriptAtualizacaoSP {
+    <#  Gera o atualizador em PowerShell.
+
+        A primeira versao usava .bat, que morria logo apos parar o servico sem
+        registrar nada. Duas causas provaveis, ambas resolvidas aqui: "timeout"
+        falha quando nao ha console (o caso da tarefa agendada em sessao 0), e o
+        cmd.exe parando servico e copiando executaveis e um padrao que o EDR
+        deste servidor derruba. O powershell.exe e assinado pela Microsoft e ja
+        e confiavel neste ambiente - mesma razao pela qual o agente roda nele.
+
+        Nao usar $Pid como nome de parametro: e variavel automatica somente-leitura. #>
+    param([string]$Pasta, [string]$Origem, [string]$PidAtualizacao)
+
+    $backup    = Join-Path $Pasta 'backup'
+    $logPs     = Join-Path $Pasta 'atualizacao.log'
+    $script    = Join-Path $Pasta 'aplicar_atualizacao.ps1'
+    $resultado = Join-Path $Pasta $ARQUIVO_RESULTADO
+    $preservar = ($PRESERVAR_ATUALIZACAO | ForEach-Object { "'$_'" }) -join ','
+
+    $modelo = @'
+# Atualizador do Server Agent SP - gerado automaticamente pelo agente.
+# Roda pelo Agendador de Tarefas, fora da arvore de processos do servico.
+$ErrorActionPreference = 'Continue'
+
+$SERVICE   = '__SERVICE__'
+$INSTALL   = '__INSTALL__'
+$ORIGEM    = '__ORIGEM__'
+$BACKUP    = '__BACKUP__'
+$LOGF      = '__LOG__'
+$RESULTADO = '__RESULTADO__'
+$TAREFA    = '__TAREFA__'
+$PIDATU    = '__PIDATU__'
+$PRESERVAR = @(__PRESERVAR__)
+
+function Log {
+    param([string]$m)
+    $linha = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
+    try { Add-Content -LiteralPath $LOGF -Value $linha -Encoding UTF8 } catch { }
+}
+
+function Aguardar-Estado {
+    param([string]$Alvo, [int]$Tentativas = 20)
+    for ($i = 1; $i -le $Tentativas; $i++) {
+        Start-Sleep -Seconds 2
+        $svc = Get-Service -Name $SERVICE -ErrorAction SilentlyContinue
+        if (-not $svc) { return $false }
+        if ($svc.Status -eq $Alvo) { return $true }
+    }
+    return $false
+}
+
+function Copiar-Novos {
+    foreach ($item in (Get-ChildItem -LiteralPath $ORIGEM)) {
+        if ($PRESERVAR -contains $item.Name) {
+            Log "  preservado (nao sobrescrito): $($item.Name)"
+            continue
+        }
+        Copy-Item -LiteralPath $item.FullName -Destination $INSTALL -Recurse -Force
+    }
+}
+
+$status  = 'FALHA'
+$detalhe = 'Atualizacao interrompida antes de concluir.'
+
+try {
+    Log "=== Atualizacao PID=$PIDATU iniciada ==="
+    Log "Identidade: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+
+    # ---- Para o servico ----
+    Log "Parando servico $SERVICE..."
+    try { Stop-Service -Name $SERVICE -Force -ErrorAction Stop }
+    catch { Log "  aviso ao parar: $($_.Exception.Message)" }
+
+    if (-not (Aguardar-Estado 'Stopped')) {
+        Log '  servico nao parou em 40s; encerrando o processo do agente.'
+        Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -like '*server_agent_sp.ps1*' } |
+            ForEach-Object {
+                Log "  encerrando PID $($_.ProcessId)"
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        Start-Sleep -Seconds 3
+    }
+    Log '[OK] Servico parado.'
+
+    # ---- Backup do que sera substituido ----
+    if (-not (Test-Path -LiteralPath $BACKUP)) { New-Item -ItemType Directory -Path $BACKUP -Force | Out-Null }
+    Get-ChildItem -LiteralPath $INSTALL -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in '.ps1', '.bat', '.exe' } |
+        Copy-Item -Destination $BACKUP -Force
+    Log "[OK] Backup gravado em $BACKUP"
+
+    # ---- Copia a nova versao ----
+    Copiar-Novos
+    Log '[OK] Arquivos da nova versao copiados.'
+
+    # Sem isso a politica RemoteSigned recusa os .ps1 vindos do zip
+    Get-ChildItem -LiteralPath $INSTALL -Recurse -File -ErrorAction SilentlyContinue |
+        Unblock-File -ErrorAction SilentlyContinue
+    Log '[OK] Scripts desbloqueados (Unblock-File).'
+
+    # ---- Sobe o servico ----
+    Log 'Iniciando servico...'
+    Start-Service -Name $SERVICE -ErrorAction SilentlyContinue
+    if (Aguardar-Estado 'Running') {
+        Log '[OK] Servico em execucao. Atualizacao concluida.'
+        $status  = 'SUCESSO'
+        $detalhe = 'Nova versao instalada e servico em execucao.'
+    } else {
+        throw 'Servico nao entrou em execucao com a nova versao.'
+    }
+} catch {
+    $detalhe = $_.Exception.Message
+    Log "[ERRO] $detalhe"
+    Log 'Restaurando versao anterior a partir do backup...'
+    try {
+        Stop-Service -Name $SERVICE -Force -ErrorAction SilentlyContinue
+        [void](Aguardar-Estado 'Stopped' 10)
+        Get-ChildItem -LiteralPath $BACKUP -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $INSTALL -Force
+        Get-ChildItem -LiteralPath $INSTALL -Recurse -File -ErrorAction SilentlyContinue |
+            Unblock-File -ErrorAction SilentlyContinue
+        Start-Service -Name $SERVICE -ErrorAction SilentlyContinue
+        if (Aguardar-Estado 'Running' 10) {
+            Log '[OK] Versao anterior restaurada e servico em execucao.'
+            $status  = 'REVERTIDO'
+            $detalhe = "$detalhe Versao anterior restaurada e servico em execucao."
+        } else {
+            Log '[FALHA] Servico nao subiu nem apos a restauracao. Requer acao manual.'
+            $status  = 'FALHA_CRITICA'
+            $detalhe = "$detalhe Servico nao subiu nem apos a restauracao; requer acao manual."
+        }
+    } catch {
+        Log "[FALHA] Erro tambem na restauracao: $($_.Exception.Message)"
+        $status  = 'FALHA_CRITICA'
+        $detalhe = "$detalhe Falha tambem na restauracao: $($_.Exception.Message)"
+    }
+} finally {
+    Log "=== Atualizacao PID=$PIDATU finalizada (STATUS=$status) ==="
+    # O agente le este arquivo ao subir e responde por e-mail com o resultado
+    $linhas = @("STATUS=$status", "DETALHE=$detalhe",
+                "DATAHORA=$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')")
+    try { Set-Content -LiteralPath $RESULTADO -Value $linhas -Encoding UTF8 } catch { }
+    schtasks /delete /tn $TAREFA /f 2>&1 | Out-Null
+}
+'@
+
+    $conteudo = $modelo.
+        Replace('__SERVICE__',   $SERVICO_NOME_SP).
+        Replace('__INSTALL__',   $BASE_DIR).
+        Replace('__ORIGEM__',    $Origem).
+        Replace('__BACKUP__',    $backup).
+        Replace('__LOG__',       $logPs).
+        Replace('__RESULTADO__', $resultado).
+        Replace('__TAREFA__',    $TAREFA_ATUALIZACAO_SP).
+        Replace('__PIDATU__',    $PidAtualizacao).
+        Replace('__PRESERVAR__', $preservar)
+
+    Set-Content -LiteralPath $script -Value $conteudo -Encoding UTF8
+    return $script
+}
+
+function Disparar-ScriptAtualizacao {
+    param([string]$Script)
+
+    # Executa sob o powershell.exe (assinado pela Microsoft), nao pelo cmd.exe:
+    # o EDR deste servidor derruba processos que param servico e substituem
+    # executaveis, e foi o que aconteceu com a primeira versao em .bat.
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }
+    $comando = "$psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$Script`""
+
+    $criar = schtasks /create /tn $TAREFA_ATUALIZACAO_SP /tr $comando `
+                      /sc once /st 00:00 /ru SYSTEM /rl HIGHEST /f 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $rodar = schtasks /run /tn $TAREFA_ATUALIZACAO_SP 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Escrever-Log '[Atualizacao] Script agendado e disparado via Agendador de Tarefas.'
+            return $true
+        }
+        Escrever-Log "[Atualizacao] Tarefa criada mas nao disparou ($rodar); executando direto." 'WARN'
+    } else {
+        Escrever-Log "[Atualizacao] schtasks falhou ($criar); executando direto." 'WARN'
+    }
+
+    Start-Process -FilePath $psExe `
+                  -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $Script `
+                  -WindowStyle Hidden
+    return $true
+}
+
+function Processar-Atualizacao {
+    param([string]$Raw, [string]$Corpo, [hashtable]$Props, [string]$Usuario)
+
+    $pid_    = Extrair-Campo $Corpo 'PID'
+    $pacote  = Extrair-Campo $Corpo 'Pacote'
+    $sha     = (Extrair-Campo $Corpo 'SHA256').ToLower()
+    $sufixo  = Extrair-Campo $Corpo 'SufixoNeutro'
+    $destino = Extrair-Campo $Corpo 'Destino'
+    $usuarioBec = Extrair-Campo $Corpo 'Usuario'
+    $tamanhoInformado = Extrair-Campo $Corpo 'TamanhoBytes'
+
+    Escrever-Log "[Atualizacao] PID=$pid_ | Pacote=$pacote | Resultado para: $destino"
+
+    # Tudo dentro do try: uma falha aqui nao pode derrubar o ciclo e impedir o
+    # processamento das solicitacoes de log da mesma rodada.
+    try {
+        # Remetente: por padrao so a propria conta monitorada (o BEC envia de e para ela)
+        $remetente = ''
+        if ($Raw -match '(?im)^From:\s*(.+)$') { $remetente = $matches[1].Trim() }
+        if ($remetente -match '<([^>]+)>') { $remetente = $matches[1] }
+        $autorizados = @($Usuario.ToLower())
+        if ($Props['atualizacao.remetentes']) {
+            $autorizados += ($Props['atualizacao.remetentes'] -split ',' | ForEach-Object { $_.Trim().ToLower() })
+        }
+        if ($autorizados -notcontains $remetente.Trim().ToLower()) {
+            Escrever-Log "[Atualizacao] Remetente nao autorizado: $remetente. Pacote ignorado." 'ERROR'
+            return $false
+        }
+
+        if (Test-PidJaAplicado $pid_) {
+            Escrever-Log "[Atualizacao] PID $pid_ ja aplicado anteriormente. Ignorando." 'WARN'
+            return $false
+        }
+
+        if (-not $pid_) { $pid_ = (Get-Date -Format 'yyyyMMddHHmmss') }
+        $pasta = Join-Path $ATUALIZACAO_DIR $pid_
+        if (Test-Path -LiteralPath $pasta) { Remove-Item -LiteralPath $pasta -Recurse -Force }
+        New-Item -ItemType Directory -Path $pasta -Force | Out-Null
+
+        $zip = Get-AnexoZip $Raw $pasta
+        if (-not $zip) {
+            Escrever-Log '[Atualizacao] E-mail sem anexo .zip. Nada a fazer.' 'ERROR'
+            return $false
+        }
+
+        $tamanho = (Get-Item -LiteralPath $zip).Length
+        if ($tamanhoInformado -and "$tamanho" -ne $tamanhoInformado.Trim()) {
+            Escrever-Log "[Atualizacao] Tamanho divergente: recebido $tamanho, informado $tamanhoInformado. Pacote descartado." 'ERROR'
+            return $false
+        }
+
+        if ($sha) {
+            $calculado = Get-Sha256Arquivo $zip
+            if ($calculado -ne $sha) {
+                Escrever-Log "[Atualizacao] SHA256 divergente. Esperado $sha, calculado $calculado. Pacote descartado." 'ERROR'
+                return $false
+            }
+            Escrever-Log '[Atualizacao] SHA256 conferido.'
+        } else {
+            Escrever-Log '[Atualizacao] E-mail sem SHA256; seguindo sem verificacao de integridade.' 'WARN'
+        }
+
+        $extraido = Join-Path $pasta 'extraido'
+        New-Item -ItemType Directory -Path $extraido -Force | Out-Null
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $extraido)
+
+        $restaurados = Restaurar-SufixoNeutro $extraido $sufixo
+        if ($restaurados) {
+            Escrever-Log "[Atualizacao] $restaurados arquivo(s) renomeado(s) de volta (sufixo $sufixo)."
+        }
+
+        # Sem isso a politica RemoteSigned recusa o .ps1 vindo do zip
+        Get-ChildItem -LiteralPath $extraido -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+        Escrever-Log '[Atualizacao] Arquivos extraidos desbloqueados (Unblock-File).'
+
+        if (-not (Test-Path -LiteralPath (Join-Path $extraido $SCRIPT_AGENTE_SP))) {
+            Escrever-Log "[Atualizacao] $SCRIPT_AGENTE_SP nao encontrado no pacote. Atualizacao abortada." 'ERROR'
+            return $false
+        }
+
+        # Gravado antes de disparar: depois da troca este processo nao existe
+        # mais, e e por este arquivo que a nova versao sabe para quem responder.
+        Gravar-ChaveValor (Join-Path $pasta $ARQUIVO_CONTEXTO) @{
+            'PID'            = $pid_
+            'Destino'        = $destino
+            'Pacote'         = $pacote
+            'Usuario'        = $usuarioBec
+            'VersaoAnterior' = $AGENT_VERSION
+        }
+
+        $script = Escrever-ScriptAtualizacaoSP $pasta $extraido $pid_
+        Add-Content -LiteralPath $PIDS_APLICADOS -Value ("{0};{1};{2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $pacote, $pid_)
+
+        Escrever-Log '[Atualizacao] Pacote validado. O servico sera parado, atualizado e reiniciado.'
+        return (Disparar-ScriptAtualizacao $script)
+    } catch {
+        Escrever-Log "[Atualizacao] Falha ao preparar a atualizacao: $($_.Exception.Message)" 'ERROR'
+        return $false
+    }
+}
+
+function Enviar-ResultadosAtualizacao {
+    <#  Responde o desfecho das atualizacoes concluidas. Roda na subida do
+        agente: como quem envia e o processo recem-iniciado, a versao informada
+        e comprovadamente a que esta em execucao.  #>
+    param([hashtable]$Props)
+
+    if (-not (Test-Path -LiteralPath $ATUALIZACAO_DIR)) { return }
+
+    foreach ($pasta in (Get-ChildItem -LiteralPath $ATUALIZACAO_DIR -Directory | Sort-Object Name)) {
+        $arqResultado = Join-Path $pasta.FullName $ARQUIVO_RESULTADO
+        $flag         = Join-Path $pasta.FullName $FLAG_RESULTADO
+        if (-not (Test-Path -LiteralPath $arqResultado) -or (Test-Path -LiteralPath $flag)) { continue }
+
+        try {
+            $resultado = Ler-ChaveValor $arqResultado
+            $contexto  = Ler-ChaveValor (Join-Path $pasta.FullName $ARQUIVO_CONTEXTO)
+
+            $destino = $contexto['Destino']
+            if (-not $destino) {
+                Escrever-Log "[Atualizacao] Resultado de $($pasta.Name) sem destino; e-mail nao enviado." 'WARN'
+                New-Item -ItemType File -Path $flag -Force | Out-Null
+                continue
+            }
+
+            $status = $resultado['STATUS']
+            if (-not $status) { $status = 'DESCONHECIDO' }
+            $pidCtx = $contexto['PID']
+            if (-not $pidCtx) { $pidCtx = $pasta.Name }
+
+            $corpo = @"
+PID: $pidCtx
+Agente: Server Agent SP
+Maquina: $env:COMPUTERNAME
+Status: $status
+VersaoInstalada: $AGENT_VERSION
+VersaoAnterior: $($contexto['VersaoAnterior'])
+Pacote: $($contexto['Pacote'])
+Detalhe: $($resultado['DETALHE'])
+ConcluidoEm: $($resultado['DATAHORA'])
+SolicitadoPor: $($contexto['Usuario'])
+"@
+            $corpoHtml = "<pre style=""font-family:Consolas,monospace;font-size:13px"">$corpo</pre>"
+            $assunto   = "[Resultado Atualizacao Agente SP] - [$status] - [$pidCtx]"
+            $logAtu    = Join-Path $pasta.FullName 'atualizacao.log'
+            $anexo     = ''
+            if (Test-Path -LiteralPath $logAtu) { $anexo = $logAtu }
+
+            Enviar-Email $Props['email'] $Props['senha'] $destino $assunto $corpoHtml $anexo
+
+            New-Item -ItemType File -Path $flag -Force | Out-Null
+            Escrever-Log "[Atualizacao] Resultado $status (PID=$pidCtx) enviado para $destino. Versao em execucao: $AGENT_VERSION"
+        } catch {
+            Escrever-Log "[Atualizacao] Falha ao enviar resultado de $($pasta.Name): $($_.Exception.Message)" 'ERROR'
+        }
+    }
+}
+
 function Executar-Ciclo {
     $props   = Ler-Properties $CONFIG_FILE
     $usuario = $props['email']
@@ -852,6 +1338,13 @@ function Executar-Ciclo {
         Escrever-Log 'email/senha nao configurados em agent.properties' 'ERROR'
         return
     }
+
+    # A cada ciclo, e nao so na subida: o atualizador confirma o servico no ar e
+    # so entao grava o resultado, alguns segundos DEPOIS de o agente ja ter
+    # iniciado. Verificando so no start, esse resultado nunca seria enviado.
+    # Fica antes do IMAP para nao depender da conexao com a caixa.
+    try { Enviar-ResultadosAtualizacao $props }
+    catch { Escrever-Log "[Atualizacao] Erro ao enviar resultado pendente: $($_.Exception.Message)" 'ERROR' }
 
     $cliente = $null
     $ssl     = $null
@@ -877,7 +1370,13 @@ function Executar-Ciclo {
                 $ids = @($matches[1].Trim() -split '\s+' | Where-Object { $_ })
             }
         }
-        Escrever-Log "Emails nao lidos encontrados: $($ids.Count)"
+        # A varredura roda a cada minuto; sem novidade, so registra em DEBUG para
+        # nao inundar o log com "0 e-mails".
+        if ($ids.Count -gt 0) {
+            Escrever-Log "Emails nao lidos encontrados: $($ids.Count)"
+        } else {
+            Escrever-Log 'Emails nao lidos encontrados: 0' 'DEBUG'
+        }
 
         $n = 0
         foreach ($id in $ids) {
@@ -902,14 +1401,38 @@ function Executar-Ciclo {
             }
             $assunto = Decode-EncodedWords $assuntoRaw
 
-            if ($assunto -match [regex]::Escape($ASSUNTO_GATILHO)) {
-                Escrever-Log "Tratando e-mail: $assunto"
+            $ehAtualizacao = $assunto -match [regex]::Escape($ASSUNTO_ATUALIZACAO)
+            $ehSolicitacao = $assunto -match [regex]::Escape($ASSUNTO_GATILHO)
+
+            if ($ehAtualizacao -or $ehSolicitacao) {
                 $corpo = Get-CorpoTexto $raw
-                Processar-Solicitacao $corpo $props $usuario $senha
-                Send-ComandoImap $ssl "s$n" "STORE $id +FLAGS (\Seen)"
-                [void](Read-RespostaImap $ssl "s$n")
+                # Contexto para o log: usuario que pediu e PID, extraidos do corpo.
+                # Todas as linhas emitidas no processamento herdam [usuario | PID].
+                $script:CtxUsuario = Extrair-Campo $corpo 'Usuario'
+                $script:CtxPid     = Extrair-Campo $corpo 'PID'
+                try {
+                    Escrever-Log "Tratando e-mail: $assunto"
+                    if ($ehAtualizacao) {
+                        # Marcado como lido antes de processar: o servico sera
+                        # reiniciado no meio e nao pode reprocessar a mensagem.
+                        Send-ComandoImap $ssl "s$n" "STORE $id +FLAGS (\Seen)"
+                        [void](Read-RespostaImap $ssl "s$n")
+                        if (Processar-Atualizacao $raw $corpo $props $usuario) {
+                            # O servico sera parado pelo script; encerra o ciclo
+                            # para nao processar outros e-mails na troca de arquivos.
+                            break
+                        }
+                    } else {
+                        Processar-Solicitacao $corpo $props $usuario $senha
+                        Send-ComandoImap $ssl "s$n" "STORE $id +FLAGS (\Seen)"
+                        [void](Read-RespostaImap $ssl "s$n")
+                    }
+                } finally {
+                    $script:CtxUsuario = ''
+                    $script:CtxPid     = ''
+                }
             } else {
-                Escrever-Log "Ignorando e-mail: $assunto"
+                Escrever-Log "Ignorando e-mail: $assunto" 'DEBUG'
             }
         }
 
@@ -973,12 +1496,17 @@ function Testar-Conexao {
     Write-Host "`nLogs configurados (dia atual):"
     foreach ($chave in ($props.Keys | Where-Object { $_ -like 'log.*.caminho' } | Sort-Object)) {
         $nome = $chave -replace '^log\.', '' -replace '\.caminho$', ''
-        $arquivo = Join-Path $props[$chave] (Resolver-Formato $props["log.$nome.formato"])
+        $tipo = $props["log.$nome.tipo"]
+        if (-not $tipo) { $tipo = 'arquivo' }
+        $tipo = $tipo.Trim().ToLower()
+        $base   = (Resolver-FormatoLog $props[$chave]).TrimEnd('\', '/')
+        $padrao = Resolver-FormatoLog $props["log.$nome.formato"]
         $motivo = ''
-        if (Arquivo-Existe $arquivo ([ref]$motivo)) {
-            Write-Host "  [OK]      $nome -> $arquivo" -ForegroundColor Green
+        $itens = Localizar-Itens $base $padrao $tipo ([ref]$motivo)
+        if ($itens.Count -gt 0) {
+            Write-Host "  [OK]      $nome ($tipo) -> $(Descrever-Itens $itens $base)" -ForegroundColor Green
         } else {
-            Write-Host "  [AUSENTE] $nome -> $arquivo" -ForegroundColor Yellow
+            Write-Host "  [AUSENTE] $nome ($tipo) -> $base\$padrao" -ForegroundColor Yellow
             Write-Host "            motivo: $motivo" -ForegroundColor DarkGray
         }
     }
@@ -1030,15 +1558,16 @@ if ($args -contains '-TesteConexao' -or $args -contains '--teste-conexao') {
 if ($args -contains '-TesteFormato' -or $args -contains '--teste-formato') {
     Write-Host 'Dia atual (log.<nome>.formato):'
     foreach ($f in @('{integrador}.log', '{linx-webservices}.log', '{CSIDebugFile}.txt',
-                     '{lgComandosSQL_}[YYYYmmdd].txt', '[ddmmyyyy].log')) {
-        Write-Host "  $f  ->  $(Resolver-Formato $f)"
+                     '{lgComandosSQL_}[YYYYmmdd].txt', '[ddmmyyyy].log', '[yyyymmdd]')) {
+        Write-Host "  $f  ->  $(Resolver-FormatoLog $f)"
     }
     $ontem = (Get-Date).AddDays(-1)
     Write-Host "`nHistorico (historico.<nome>.formato) para $($ontem.ToString('dd/MM/yyyy')):"
     foreach ($f in @('{linx-webservices_}[yyyy-mm-dd](xxx).zip', '[yyyymmdd]',
                      '{communication_}[yyyy-mm-dd](xxx).zip',
-                     '{lgComandosSQL_}[yyyymmdd].txt', '[ddmmyyyy].log')) {
-        Write-Host "  $f  ->  $(Resolver-FormatoHistorico $f $ontem)"
+                     '{lgComandosSQL_}[yyyymmdd].txt', '{logsTesouraria_}[yyyymmdd].zip',
+                     '[ddmmyyyy].log')) {
+        Write-Host "  $f  ->  $(Resolver-FormatoLog $f $ontem)"
     }
     return
 }
@@ -1046,8 +1575,22 @@ if ($args -contains '-TesteFormato' -or $args -contains '--teste-formato') {
 $propsIni  = Ler-Properties $CONFIG_FILE
 $intervalo = [int]($propsIni['intervalo_minutos'])
 if ($intervalo -le 0) { $intervalo = 5 }
-Escrever-Log "Server Agent SP v$AGENT_VERSION (PowerShell) iniciado. Intervalo de verificacao: $intervalo minuto(s)."
+
+# Nivel de log e identidade resolvidos antes da primeira linha
+$nivelCfg = $propsIni['log.level']; if (-not $nivelCfg) { $nivelCfg = 'INFO' }
+$script:LogNivelMin = ConvertTo-NivelNum $nivelCfg
+$idFull = Get-IdentidadeAtual
+$script:LogIdentidade = if ($idFull -match '\\([^\\]+)$') { $matches[1] } else { $idFull }
+
+Escrever-Log "Server Agent SP v$AGENT_VERSION (PowerShell) iniciado. Intervalo de verificacao: $intervalo minuto(s). Log level: $($nivelCfg.ToUpper())."
 Escrever-Log "Identidade: $(Get-IdentidadeAtual) | acesso a rede como: $env:USERDOMAIN\$env:COMPUTERNAME`$ (quando SYSTEM)"
+
+# Se o agente subiu logo apos uma atualizacao, responde o resultado
+try {
+    Enviar-ResultadosAtualizacao $propsIni
+} catch {
+    Escrever-Log "[Atualizacao] Erro ao enviar resultado pendente: $($_.Exception.Message)" 'ERROR'
+}
 
 while ($true) {
     try {

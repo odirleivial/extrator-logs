@@ -1,6 +1,8 @@
 from flask import render_template, request, jsonify
 import logging
 
+from logger import USUARIO_WINDOWS
+
 logger = logging.getLogger('ExtratrorLogs')
 
 def converter_para_array(valor):
@@ -53,6 +55,7 @@ def enviar_configuracao_pdv(app, ler_properties, config_file, gerar_pid, enviar_
     assunto = f"[Parametrização PDV] - [{pid}]"
     corpo = (
         f"PID: {pid}\n"
+        f"Usuario: {USUARIO_WINDOWS}\n"
         f"Selecao: {selecao}\n"
         f"Parametros: {parametros_join}\n\n"
         f"PDVs para parametrização:\n{selecao_formatada}"
@@ -102,6 +105,7 @@ def relatorio_parametrizacao(app, ler_properties, config_file, gerar_pid, enviar
     assunto = f"[Relatório Parametrização] - [{pid}]"
     corpo = (
         f"PID: {pid}\n"
+        f"Usuario: {USUARIO_WINDOWS}\n"
         f"Destino: {email_destino}\n"
         f"Selecao: {selecao}\n\n"
         f"PDVs para relatório:\n{selecao_formatada}"
@@ -151,6 +155,7 @@ def versao_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
     assunto = f"[Status PDV] - [{pid}]"
     corpo = (
         f"PID: {pid}\n"
+        f"Usuario: {USUARIO_WINDOWS}\n"
         f"Destino: {email_destino}\n"
         f"Selecao: {selecao}\n\n"
         f"PDVs para consulta de status:\n{selecao_formatada}"
@@ -200,6 +205,7 @@ def reiniciar_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmai
     assunto = f"[Reiniciar PDV] - [{pid}]"
     corpo = (
         f"PID: {pid}\n"
+        f"Usuario: {USUARIO_WINDOWS}\n"
         f"Destino: {email_destino}\n"
         f"Selecao: {selecao}\n\n"
         f"PDVs para reinicialização:\n{selecao_formatada}"
@@ -249,6 +255,7 @@ def fechar_pdv(app, ler_properties, config_file, gerar_pid, enviar_email_gmail):
     assunto = f"[Fechar PDV] - [{pid}]"
     corpo = (
         f"PID: {pid}\n"
+        f"Usuario: {USUARIO_WINDOWS}\n"
         f"Destino: {email_destino}\n"
         f"Selecao: {selecao}\n\n"
         f"PDVs para encerramento:\n{selecao_formatada}"
@@ -298,6 +305,7 @@ def verificar_configuracao_pdv(app, ler_properties, config_file, gerar_pid, envi
     assunto = f"[Verificar Parametrização] - [{pid}]"
     corpo = (
         f"PID: {pid}\n"
+        f"Usuario: {USUARIO_WINDOWS}\n"
         f"Destino: {email_destino}\n"
         f"Selecao: {selecao}\n\n"
         f"PDVs para verificação:\n{selecao_formatada}"

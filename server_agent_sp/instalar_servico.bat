@@ -71,6 +71,10 @@ if !errorlevel! neq 0 (
     call :L "[ERRO] Falha ao copiar server_agent_sp.ps1"
     set ERRO=1 & goto :fim
 )
+copy /y "%~dp0version.ps1" "%INSTALL_DIR%\version.ps1" >nul
+if !errorlevel! neq 0 (
+    call :L "[AVISO] version.ps1 nao copiado. O agente reportara versao 0.0.0."
+)
 copy /y "%~dp0agent.properties" "%INSTALL_DIR%\agent.properties" >nul
 copy /y "%NSSM_SRC%"                   "%INSTALL_DIR%\nssm.exe"              >nul
 copy /y "%~dp0iniciar_servico.bat"     "%INSTALL_DIR%\iniciar_servico.bat"   >nul
@@ -82,8 +86,8 @@ call :L "[OK] Arquivos copiados."
 :: ---- PASSO 4: Remover a marca de "arquivo da internet" do script ----
 :: A politica do dominio e RemoteSigned: scripts locais rodam normalmente, mas
 :: arquivos vindos de download/zip ficam marcados e sao recusados.
-"%PS_EXE%" -NoProfile -Command "Unblock-File -Path '%INSTALL_DIR%\server_agent_sp.ps1'" >> "%LOG%" 2>&1
-call :L "[OK] Script desbloqueado (Unblock-File)."
+"%PS_EXE%" -NoProfile -Command "Get-ChildItem -LiteralPath '%INSTALL_DIR%' -Recurse -Include *.ps1,*.bat | Unblock-File" >> "%LOG%" 2>&1
+call :L "[OK] Scripts desbloqueados (Unblock-File)."
 
 :: ---- PASSO 5: Instalar e configurar o servico ----
 call :L "Instalando servico via NSSM..."

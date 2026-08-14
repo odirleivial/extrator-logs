@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
-**Data:** 04 de Agosto de 2026  
-**Versão:** 2.32.0
+**Data:** 06 de Agosto de 2026  
+**Versão:** 2.34.3
 
 ---
 
@@ -18,6 +18,33 @@ A versão é definida em `version.py` e propagada automaticamente para o footer 
 ---
 
 ## 📋 Histórico de Versões
+
+### 2.34.3 — 06/08/2026
+- `LEIA-ME.txt` do agente SP atualizado: a lista de logs passou a ser agrupada por servidor (14 logs, indicando quais também atendem datas anteriores) e ganhou a seção descrevendo o `portal-big-retail` e o `communication-big-retail`
+
+### 2.34.2 — 06/08/2026
+- **Dois novos logs do SERVERS_EP_SP, no servidor 10.56.62.152** (`\linx-wildfly\standalone\data\portal-big-retail\logs`), disponíveis na tela Solicitar Logs: **`portal-big-retail`** e **`communication-big-retail`** (este último na subpasta `communication`)
+- Nos dois, o arquivo do dia tem nome fixo (`portal-big-retail.log`, `communication.log`) e os de dias anteriores são zips rotacionados na mesma pasta (`portal-big-retail_2026-08-02.0.zip`, `communication_2026-08-02.0.zip`) — configurados com o curinga `(xxx)`, que traz todos os arquivos daquele dia
+- Alteração apenas de configuração: `agent.properties` do agente SP e chave `logs_sp` do `config.properties`. Nenhuma mudança no código dos agentes
+
+### 2.34.1 — 06/08/2026
+- **Dois novos logs do SERVERS_EP_SP** (10.56.62.140, em `\linx-tesouraria\logsTesouraria`), disponíveis na tela Solicitar Logs: **`TesourariaDebugFile`** (`TesourariaDebugFile.txt`) e **`tesourariaJava`** (`tesourariaJava.log`)
+- Nos dois, o arquivo do dia não tem data no nome e os de dias anteriores levam a data como sufixo **depois da extensão**, no formato `dd-mm-yyyy` — `TesourariaDebugFile.txt.24-07-2026`, `tesourariaJava.log.17-07-2026`. Configurados como `{TesourariaDebugFile.txt}.[dd-mm-yyyy]` e `{tesourariaJava.log}.[dd-mm-yyyy]`
+- **Agente SP — o `caminho` também aceita os tokens de data**, não só o `formato`. Serve para logs em que a data está na pasta e não no nome do arquivo (ex.: `...\logsTesouraria\[yyyymmdd]`). Nenhum caminho já configurado usa tokens, então o comportamento atual não muda
+- Agente SP em v2.3.0 (PowerShell) e v1.4.0 (Python)
+
+### 2.33.0 — 06/08/2026
+- **Novo log do SERVERS_EP_SP — `logsTesouraria`** (10.56.62.140), disponível na tela Solicitar Logs (chave `logs_sp`). Ele muda de forma conforme a data pedida: no **dia corrente** é a pasta do dia (`\linx-tesouraria\logsTesouraria\<yyyymmdd>`), que vai compactada no anexo; em **dias anteriores** o próprio servidor já zipou a pasta, e o agente busca o arquivo `logsTesouraria_<yyyymmdd>.zip` na pasta acima
+- **Agente SP — `log.<nome>.tipo` (arquivo | pasta) também na configuração do dia corrente.** Antes o `tipo` só existia no histórico e o dia corrente sempre assumia arquivo, o que impedia compactar uma pasta do dia. Chave opcional: sem ela o comportamento continua sendo `arquivo`
+- **Resolvedor de formato unificado:** o dia corrente e o histórico passam a usar o mesmo resolvedor, então `(xxx)` e a classificação por conteúdo (`[..]`/`{..}` equivalentes) valem também para `log.<nome>.formato`. Antes o dia corrente reconhecia só `{fixo}`/`[data]` pelo delimitador — configurar `{yyyymmdd}` numa chave e `[yyyymmdd]` na outra dava resultados diferentes. Verificado que os seis formatos já em uso resolvem exatamente igual nos dois resolvedores
+- **Pastas no anexo vão sob o nome do log** (`logsTesouraria/20260806/…`, `ProcTrans_CSIDebugFile/20260803/…`), igual ao que já acontecia com os arquivos. Antes entravam na raiz do zip com o nome da pasta, que é só a data — não dava para saber de qual log cada uma veio
+- Agente SP em v2.2.0 (PowerShell) e v1.3.0 (Python)
+
+### 2.32.1 — 04/08/2026
+- **Instalador — configurações do projeto voltam a chegar nas máquinas:** o merge do `config.properties` só adicionava chaves novas, então qualquer alteração de **valor** feita em `properties/config.properties` (lojas, logs, `logs_sp`, consultas Oracle, APIs) era descartada na atualização, pois a chave já existia na máquina
+- Agora as chaves de **catálogo** — `stores`, `*_pdvs`, `logs`, `logs_sp`, `ignorar_lojas`, `emails_destino`, `PARAMETROS_PDV`, `oracle_query_names`, `oracle_query.*`, `api_order`, `api.*` — são sempre atualizadas com o conteúdo do build (inclusive removendo consultas/APIs excluídas do projeto), enquanto as chaves específicas da máquina (`pinpad_*`, `bec_loja`, `bec_pdv`, `modo_instalacao`, `bec_tunnel_url`, `log.*`, `tab.*`) continuam preservadas
+- O arquivo resultante passa a seguir a ordem e os comentários de seção do build; chaves locais que não existem no build são mantidas num bloco no final, e um backup `config.properties.bkp` é gravado antes de cada atualização
+- Removida a chave duplicada `SERVERs_EP_SP_pdvs` (grafia divergente de `SERVERS_EP_SP_pdvs`) do `config.properties`
 
 ### 2.32.0 — 04/08/2026
 - **Server Agent SP — consulta a logs históricos (dias anteriores):** o agente SP passa a tratar o campo `Data: dd/mm/yyyy` do e-mail da mesma forma que o agente de PDV. Data de hoje (ou ausente) extrai os logs do dia como sempre; data anterior monta os caminhos daquele dia pela nova configuração `historico.<log>.*`; data futura ou inválida cai no dia atual com aviso no log

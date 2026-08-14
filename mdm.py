@@ -10,6 +10,8 @@ import requests
 from datetime import datetime
 from flask import render_template, request, jsonify
 
+from execucao import registrar_execucao
+
 logger = logging.getLogger('ExtratrorLogs')
 
 # Resolve o diretório base igual aos demais módulos (extrator_logs.py, request_api.py)
@@ -350,6 +352,10 @@ def consultar_cliente_mdm(app, ler_properties, config_file):
             'body': resp.text,
         }
         logger.info(f"Consulta MDM {identificador} retornou status {resp.status_code}")
+        registrar_execucao(props, 'MDM - Consultar', detalhes={
+            'AdministrativeIdentifier': identificador,
+            'StatusCode': resp.status_code,
+        })
         return jsonify({'sucesso': True, 'retorno': retorno})
     except Exception as e:
         logger.error(f"Erro ao consultar cliente MDM {identificador}: {str(e)}")
@@ -382,6 +388,10 @@ def cadastrar_cliente_mdm(app, ler_properties, config_file):
         }
         logger.info(f"Cadastro MDM retornou status {resp.status_code}")
         registrar_historico_mdm(administrative_identifier, payload_json, resp.status_code, resp.text)
+        registrar_execucao(props, 'MDM - Cadastrar', detalhes={
+            'AdministrativeIdentifier': administrative_identifier,
+            'StatusCode': resp.status_code,
+        })
         return jsonify({'sucesso': True, 'retorno': retorno})
     except Exception as e:
         logger.error(f"Erro ao cadastrar cliente MDM: {str(e)}")
@@ -422,6 +432,10 @@ def atualizar_cliente_mdm(app, ler_properties, config_file):
         }
         logger.info(f"Alteração MDM {administrative_identifier} retornou status {resp.status_code}")
         registrar_historico_mdm(administrative_identifier, payload_json, resp.status_code, resp.text, prefixo='patch')
+        registrar_execucao(props, 'MDM - Alterar', detalhes={
+            'AdministrativeIdentifier': administrative_identifier,
+            'StatusCode': resp.status_code,
+        })
         return jsonify({'sucesso': True, 'retorno': retorno})
     except Exception as e:
         logger.error(f"Erro ao alterar cliente MDM {administrative_identifier}: {str(e)}")

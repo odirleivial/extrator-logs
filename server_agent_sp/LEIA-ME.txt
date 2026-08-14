@@ -1,5 +1,5 @@
 ===========================================================================
-Server Agent SP (agente_sp) v2.1.0 - PowerShell
+Server Agent SP (agente_sp) v2.3.0 - PowerShell
 ===========================================================================
 
 Versao reduzida do Agent Extrator Log: apenas extracao de logs de
@@ -27,19 +27,56 @@ O campo Data decide de onde os logs saem:
     data anterior             -> logs daquele dia, config historico.<nome>.*
     data futura ou invalida   -> cai no dia atual, com aviso no log
 
-Logs do dia (log.<nome>.* no agent.properties):
-    integrador_idb, webservices, ProcTrans_CSIDebugFile,
-    lgComandosSQL, csi_ws-safe, csi_safe-retaguarda
+Logs configurados (14), por servidor. "hist" = tambem atende datas anteriores:
 
-Logs historicos (historico.<nome>.* no agent.properties):
-    webservices, ProcTrans_CSIDebugFile, ProcTrans_CSIDebugFileRT,
-    ProcTrans_CSIDebugFileSO, ProcTrans_communication, lgComandosSQL,
-    csi_ws-safe, csi_safe-retaguarda
+  10.56.62.152
+    integrador_idb              (so dia)
+    webservices                 hist
+    portal-big-retail           hist
+    communication-big-retail    hist
 
-As duas listas nao sao iguais. integrador_idb so atende a data de hoje;
-os tres ProcTrans (CSIDebugFileRT, CSIDebugFileSO e communication) so atendem
-datas anteriores. Um log pedido fora da lista correspondente volta no e-mail
-como "Sem configuracao", sem atrapalhar os demais.
+  10.56.62.140
+    ProcTrans_CSIDebugFile      hist
+    ProcTrans_CSIDebugFileRT    hist
+    ProcTrans_CSIDebugFileSO    hist
+    ProcTrans_communication     hist
+    lgComandosSQL               hist
+    logsTesouraria              hist   (tipo=pasta no dia corrente)
+    TesourariaDebugFile         hist
+    tesourariaJava              hist
+
+  10.56.62.139
+    csi_ws-safe                 hist
+    csi_safe-retaguarda         hist
+
+O integrador_idb e o unico sem configuracao de historico: so atende a data de
+hoje. Um log pedido sem a configuracao correspondente volta no e-mail como
+"Sem configuracao", sem atrapalhar os demais.
+
+OS TRES LOGS DA TESOURARIA (10.56.62.140, \linx-tesouraria\logsTesouraria)
+    logsTesouraria       muda de forma conforme a data: no dia corrente e a
+                         PASTA do dia (\logsTesouraria\<yyyymmdd>), que vai
+                         compactada no anexo; em dias anteriores o proprio
+                         servidor ja zipou a pasta, e o agente pega o arquivo
+                         logsTesouraria_<yyyymmdd>.zip na pasta acima.
+    TesourariaDebugFile  o arquivo do dia nao tem data no nome
+    tesourariaJava       (TesourariaDebugFile.txt, tesourariaJava.log) e os
+                         de dias anteriores levam a data como sufixo DEPOIS
+                         da extensao, no formato dd-mm-yyyy:
+                             TesourariaDebugFile.txt.24-07-2026
+                             tesourariaJava.log.17-07-2026
+                         Todos ficam na mesma pasta.
+
+OS LOGS DO BIG RETAIL (10.56.62.152, sob \linx-wildfly\standalone\data)
+    portal-big-retail        no dia corrente sao arquivos de nome fixo
+    communication-big-retail (portal-big-retail.log e, na subpasta
+                             communication, communication.log). Em dias
+                             anteriores o servidor rotaciona em zips na
+                             mesma pasta, com sufixo de rotacao:
+                                 portal-big-retail_2026-08-02.0.zip
+                                 communication_2026-08-02.0.zip
+                             O curinga (xxx) do formato traz todos os
+                             arquivos daquele dia (.0, .1, .2 ...).
 
 ---------------------------------------------------------------------------
 INSTALACAO (como servico Windows)
@@ -109,24 +146,30 @@ server_agent_sp.ps1 com um certificado de assinatura de codigo interno.
 ---------------------------------------------------------------------------
 FORMATO DA NOMENCLATURA DOS LOGS (agent.properties)
 ---------------------------------------------------------------------------
+As duas configuracoes usam os MESMOS tokens e o mesmo resolvedor. A unica
+diferenca e quando cada uma vale: log.* no dia corrente, historico.* em dias
+anteriores.
+
 LOGS DO DIA
-    log.<nome>.caminho = pasta onde o arquivo esta (UNC ou local)
-    log.<nome>.formato = nomenclatura do arquivo:
-        {texto}  -> parte fixa do nome
-        [tokens] -> data: yyyy=ano 4 dig., yy=ano 2 dig., mm=mes, dd=dia
-        texto fora de {} e [] (ex.: extensao) e mantido como esta
+    log.<nome>.caminho = pasta onde o arquivo/pasta esta (UNC ou local)
+    log.<nome>.formato = nomenclatura do arquivo ou da pasta
+    log.<nome>.tipo    = arquivo | pasta   (opcional, padrao arquivo)
 
     Exemplos:
         {integrador}.log               -> integrador.log
         {lgComandosSQL_}[YYYYmmdd].txt -> lgComandosSQL_20260803.txt
         [ddmmyyyy].log                 -> 03082026.log
+        [yyyymmdd] + tipo=pasta        -> compacta a pasta 20260806
 
 LOGS HISTORICOS (dias anteriores)
     historico.<nome>.caminho = pasta base onde o arquivo/pasta do dia fica
     historico.<nome>.formato = nomenclatura do arquivo OU da pasta
     historico.<nome>.tipo    = arquivo | pasta
 
-    Tokens do formato:
+    O CAMINHO tambem aceita os tokens, para os casos em que a data esta na
+    pasta e nao no nome do arquivo (ex.: ...\logsTesouraria\[yyyymmdd]).
+
+    Tokens do formato (valem para as duas configuracoes):
         [..] ou {..} -> data quando o conteudo so tem marcadores de data
                         (yyyy, yy, mm, dd, hh, ss); senao, texto fixo.
                         A classificacao e pelo conteudo, entao tanto faz se a
@@ -147,11 +190,17 @@ LOGS HISTORICOS (dias anteriores)
     CSIDebugFileSO, que dividem a pasta diaria do debug_P2K - ela entra no
     anexo UMA UNICA VEZ, e os tres aparecem como incluidos no e-mail.
 
-No zip enviado, cada arquivo vai em uma subpasta com o nome do log, para
-evitar colisao entre logs que geram o mesmo nome (ex.: csi_ws-safe e
-csi_safe-retaguarda, ambos [ddmmyyyy].log). As pastas entram com o proprio
-nome (a data) na raiz do zip. O anexo de uma consulta historica se chama
-LOG-SP-HIST<yyyymmdd>-<timestamp>.zip, para nao se confundir com o do dia.
+No zip enviado, tudo vai em uma subpasta com o nome do log - tanto arquivos
+quanto pastas. Isso evita colisao entre logs que geram o mesmo nome (ex.:
+csi_ws-safe e csi_safe-retaguarda, ambos [ddmmyyyy].log) e deixa claro de
+qual log veio cada pasta, ja que as pastas se chamam so a data:
+
+    logsTesouraria/20260806/...
+    ProcTrans_CSIDebugFile/20260803/...
+    webservices/linx-webservices_2026-08-03.0.zip
+
+O anexo de uma consulta historica se chama LOG-SP-HIST<yyyymmdd>-<timestamp>
+.zip, para nao se confundir com o do dia.
 
 ---------------------------------------------------------------------------
 TESTES (sem consumir e-mails da caixa)
