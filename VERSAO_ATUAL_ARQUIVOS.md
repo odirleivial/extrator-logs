@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
-**Data:** 06 de Agosto de 2026  
-**Versão:** 2.34.3
+**Data:** 17 de Agosto de 2026  
+**Versão:** 2.44.0
 
 ---
 
@@ -17,7 +17,246 @@ A versão é definida em `version.py` e propagada automaticamente para o footer 
 
 ---
 
+## 📦 Como gerar o pacote de instalação do agente
+
+O BEC distribui o Agent Extrator de Log pela aba **Administrador → Atualizar Agente**,
+que envia por e-mail o arquivo `AgentExtratarLog_instalacao.zip` da raiz do projeto.
+Para regerar esse pacote depois de alterar `server_agent/agent_extrator_log.py`:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\gerar_pacote_agente.ps1
+```
+
+O script compila o exe com PyInstaller, copia para `server_agent\` e monta o ZIP.
+Use `-SemCompilar` para apenas remontar o ZIP com o exe já compilado.
+
+Regras que o pacote precisa respeitar:
+
+| Regra | Motivo |
+|-------|--------|
+| ZIP **plano**, sem subpastas | `atualizacao_agente.py` não inspeciona ZIPs aninhados, e o `instalar_servico.bat` espera os arquivos ao lado do exe |
+| Exatamente estes 7 arquivos | `agent.properties`, `agent_extrator_log.exe`, `nssm.exe`, `iniciar_servico.bat`, `instalar_servico.bat`, `parar_servico.bat`, `remover_servico.bat` |
+| Versão em `server_agent/version.py` atualizada | É a versão que o agente informa no e-mail de resultado da atualização, confirmando qual build ficou em execução |
+
+No envio, o BEC renomeia as entradas `.exe` dentro do ZIP (o Gmail recusa esse tipo
+de anexo) e o agente desfaz a renomeação ao aplicar a atualização.
+
+> O fonte do relay está versionado em `cloudflare_worker/worker.js`, com as
+> instruções de deploy e a lista de endpoints no `README.md` da mesma pasta.
+
+---
+
+## 📡 Canais de comunicação BEC → agentes
+
+| Funcionalidade | Flag | Canal |
+|---|---|---|
+| PinPad | `pinpad_modo_comunicacao` | relay |
+| Solicitar Logs (lojas de PDV) | `logs_modo_comunicacao` | relay |
+| Manutenção PDV (6 funcionalidades) | `pdv_modo_comunicacao` | relay |
+| Registro de Execução (trilha de auditoria) | `registro_modo_comunicacao` | relay |
+| Atualizar Agente — **só o Agent Extrator** | `atualizacao_modo_comunicacao` | relay (limite 18 MB) |
+| **Solicitar Logs do Server Agent SP** | — | **e-mail** (rede de SP não alcança o relay) |
+| **Atualizar o Server Agent SP** | — | **e-mail** (mesma razão) |
+
+As **respostas** dos agentes ao solicitante continuam sempre por e-mail — o relay
+transporta apenas o pedido. Padrão de fábrica das cinco flags: `tunnel`.
+
+Com isso o Agent Extrator não recebe mais nada por e-mail; só o Server Agent SP
+continua dependendo da caixa, porque a rede de SP não alcança o relay.
+
+Na atualização, o instalador **preserva o valor que a máquina já tem** e só aplica
+`tunnel` quando a chave ainda não existe lá (`MergeProperties` no `setup.iss`:
+chave com linha ativa na máquina vence; ausente recebe o valor do build). Uma
+máquina que veio da 2.41.0 com `logs_modo_comunicacao=email` continua em `email`
+até ser trocado pela interface.
+
+---
+
+## 📡 Fila do relay — defeitos corrigidos no Worker
+
+Levantados em 17/08/2026 por sondagem e depois confirmados no fonte, quando ele
+foi recuperado do painel da Cloudflare e versionado:
+
+| Defeito | Como era | Como ficou |
+|---|---|---|
+| **Fila sobrescrevia** | uma chave `cmd:<loja>:<pdv>`; o segundo `POST /comando` apagava o pedido anterior sem erro | uma chave **por item** (`cmd:<loja>:<pdv>:<ts>:<rnd>`), entregue na ordem de chegada |
+| **Ack apagava o item errado** | `POST /resultado/<pid>` limpava a chave do comando qualquer que fosse o item ali | o PID aponta para a chave exata; só aquele item é removido |
+| **Item lento travava a fila** | o `GET /pendente` devolvia sempre o mesmo item até ele ser respondido | reserva de entrega (10 min): o próximo poll passa ao item seguinte |
+| **Tudo expirava em 2 min** | agente offline por mais de 2 min perdia o pedido; o BEC tinha 2 min para ler um resultado | 15 min para comandos e resultados; PinPad segue em 2 min, porque comando velho de PinPad não serve |
+| **Relay aberto sem TOKEN** | `if (token && ...)` — sem a variável, servia a internet inteira | sem `TOKEN` configurado recusa tudo com 503 |
+
+O contrato HTTP não mudou, então BEC e agentes já instalados funcionam com as duas
+versões — a troca não precisa ser sincronizada.
+
+Como conferir: `python scripts\conferir_worker.py` antes de subir e
+`python scripts\testar_worker_relay.py` depois. O segundo **reprova a versão
+antiga** (enfileira três pedidos e cobra que os três sejam entregues), então serve
+para confirmar que o deploy pegou.
+
+Limitação que permanece: o KV é eventualmente consistente, então um item recém
+gravado pode levar um instante para aparecer na listagem — o agente pega no ciclo
+seguinte de 2 s. Consistência forte exigiria migrar a fila para Durable Objects.
+
+---
+
 ## 📋 Histórico de Versões
+
+### 2.44.0 — 17/08/2026
+- **Atualização do agente pelo relay.** Nova flag **Atualizar Agente**
+  (`atualizacao_modo_comunicacao`). O pacote vai em **base64** dentro do payload, e o
+  resultado da instalação continua chegando por e-mail — enviado pela nova versão do
+  agente depois de reiniciar, como sempre foi
+- **Só para o Agent Extrator.** O Server Agent SP fica de fora por dois motivos somados:
+  a rede de SP não alcança o relay, e a fila é endereçada por `bec_loja`/`bec_pdv`, que é
+  a do extrator — publicar o pacote do SP ali entregaria o build errado. A restrição é
+  explícita em `AGENTES_COM_RELAY`, não implícita na configuração
+- **Limite de 18 MB no modo relay**, contra 25 MB no e-mail: o corpo JSON precisa ficar
+  abaixo de ~25 MB (limite de valor do KV) e o base64 ocupa 1/3 a mais. Medido contra o
+  Worker em produção — 18 MB de binário (24,0 MB de JSON) passa, 19 MB (25,3 MB) é
+  recusado com HTTP 500. O pacote atual, de 8,4 MB, usa menos da metade da margem
+- **Sem a neutralização de executáveis** no caminho do relay: renomear `.exe` para
+  `.exe.becpkg` existe só para driblar o filtro de anexo do Gmail, que não está no
+  caminho. O ZIP segue exatamente como o usuário escolheu
+- **A autorização passa a ser o token do relay.** A checagem de remetente do e-mail não
+  se aplica: só quem tem o token consegue publicar na fila do agente
+- **O agente responde ao relay ANTES de aplicar a atualização.** É o único tipo assim
+  (`ack_antes`): aplicar significa parar o serviço e trocar o executável, então o
+  processo morre no meio e a resposta nunca sairia. Sem esse ack o item ficaria preso no
+  relay e voltaria a cada poll depois do reinício — e a reserva de PID, que é em memória,
+  se perde no restart. A proteção final continua sendo o `atualizacoes_aplicadas.txt`,
+  gravado antes de disparar o script
+- Também aqui o BEC **não** envia `[Registro Execucao]` no caminho do relay: seria um
+  segundo item na mesma fila, com o mesmo PID, sobrescrevendo o pacote — o mesmo defeito
+  corrigido no PinPad na 2.43.1
+- `processar_atualizacao` ganhou o parâmetro `dados_zip`: quando presente, grava o pacote
+  a partir dos bytes recebidos em vez de extrair o anexo. Conferência de tamanho, SHA256,
+  extração e checagem do executável seguem idênticas nos dois canais
+- Agente Extrator em v1.5.0
+
+### 2.43.1 — 17/08/2026
+- **Corrige o PinPad em modo relay, que não gravava usuário/PID no log do agente nem
+  aparecia na trilha de ações.** Eram duas causas somadas:
+  - o payload do comando **não levava o campo `usuario`**, então o agente não tinha o
+    dado para carimbar as linhas nem para registrar a ação. As linhas saíam como
+    `- [-] - [-] -`
+  - o ramo do PinPad no polling era o único tratado inline no laço e **não chamava
+    `definir_contexto` nem `registrar_acao_usuario`** — os demais tipos passam por
+    `_tratar_item_relay`, que já fazia as duas coisas
+- **Elimina um envio duplo que fazia o pedido se perder:** o BEC enfileirava o comando
+  do PinPad e, logo depois, o registro de execução com o **mesmo PID**. Como o relay
+  guarda um item só por loja/PDV, o registro sobrescrevia o comando; e o ack do comando
+  apagava o registro, porque o resultado não é casado por PID. O `registrar_execucao`
+  foi removido do caminho tunnel do PinPad — quem registra a ação agora é o agente, ao
+  consumir o comando, como já acontece nas demais funcionalidades pelo relay
+- Verificado que nenhuma outra funcionalidade tinha o problema: todas as demais passam
+  por `_tratar_item_relay` (contexto + trilha) e fazem um único envio à fila
+- Novos testes cobrindo a regressão e a varredura dos tipos em `scripts/testar_relay.py`
+- Agente Extrator em v1.4.1
+
+### 2.43.0 — 17/08/2026
+- **Registro de Execução pelo relay.** Nova flag **Registro de Execução**
+  (`registro_modo_comunicacao`) na tela de Configurações. É a trilha de auditoria das
+  funcionalidades que o BEC executa sem agente nenhum (Exportar Oracle, Requisição API,
+  MDM, PinPad direto, Solicitar Logs SP, Atualizar Agente)
+- O `execucao.py` recebe o canal do relay por um **hook** (`definir_canal_relay`),
+  instalado pelo `extrator_logs` na subida — importar o `extrator_logs` de dentro do
+  `execucao` fecharia um ciclo, já que o primeiro importa o segundo. O envio segue em
+  thread separada, então registrar nunca atrasa a operação do usuário
+- No agente, o item é despachado para o mesmo `processar_registro_execucao` do e-mail.
+  Duas particularidades desse tipo, ambas tratadas no despachante:
+  - **o próprio handler registra a ação na trilha** (o nome vem do corpo, não do tipo),
+    então o despachante não pré-registra — se registrasse, gravaria o nome errado e a
+    dedução por PID engoliria o registro correto que viria em seguida
+  - **não pega o lock** das operações pesadas: só acrescenta uma linha em arquivo, e
+    ficar atrás de uma extração de minutos o atrasaria sem motivo
+- `_TIPOS_RELAY` passou a descrever também a **assinatura** do handler
+  (`completo`/`props`/`simples`), já que `processar_registro_execucao` recebe três
+  argumentos enquanto os demais recebem quatro ou seis
+- **Sem fallback para e-mail quando o relay falha**, de propósito: o modo existe para
+  não usar e-mail. A operação do usuário não é afetada, mas o registro se perde — o
+  log traz o aviso explícito, e a tela de Configurações avisa disso
+- Agente Extrator em v1.4.0
+
+### 2.42.0 — 17/08/2026
+- **Manutenção PDV pelo relay.** Nova flag **Manutenção PDV** (`pdv_modo_comunicacao`)
+  em Configurações → *Modo de comunicação com o Agente*, cobrindo as seis
+  funcionalidades de uma vez: Parametrização PDV, Verificar Parametrização,
+  Relatório Parametrização, Status PDV, Fechar PDV e Reiniciar PDV
+- Com isso, **os únicos envios do BEC por e-mail passam a ser os logs do Server Agent SP
+  e a atualização de versão dos agentes**
+- O roteamento é feito **pelo assunto** que cada funcionalidade já montava
+  (`_TIPOS_RELAY_POR_ASSUNTO`), então nenhuma das seis precisou ter o corpo alterado:
+  elas recebem `enviar_ao_agente` no lugar de `enviar_email_gmail` e não sabem qual
+  canal está em uso. O corpo é **byte a byte o mesmo** nos dois canais
+- O payload passa a levar o campo `corpo` (formato chave/valor idêntico ao do e-mail),
+  e o agente entrega esse corpo ao **mesmo handler** que atende o e-mail equivalente —
+  inclusive o e-mail de resposta ao solicitante sai idêntico. Os campos soltos da
+  solicitação de log continuam sendo enviados, para um agente ainda na v1.2.0
+- `imap.store` trocado por `_marcar_lido(imap, num)` nos 14 pontos dos handlers: no
+  caminho do relay não existe mensagem para marcar como lida, e o helper vira no-op
+- O PID do payload é o **mesmo** que a tela mostrou (extraído do corpo, não gerado de
+  novo), senão a trilha de ações registraria um PID diferente do informado ao usuário
+- Tudo que mexe em PDV pelo relay é serializado pelo mesmo lock e roda em thread
+  própria, com a guarda de reapresentação por PID introduzida na 2.41.0
+- `scripts/testar_solicitacao_log_relay.py` renomeado para **`scripts/testar_relay.py`**
+  e ampliado: exercita as 6 rotas novas, confere que o agente resolve cada tipo para o
+  handler certo, que o nome da funcionalidade na trilha é igual pelos dois canais, e
+  que com a flag em `email` nada vai para o relay
+- Agente Extrator em v1.3.0
+
+### 2.41.0 — 17/08/2026
+- **Solicitar Logs via relay (Cloudflare Worker), sem e-mail no pedido.** Nova flag
+  **Solicitar Logs** em Configurações → *Modo de comunicação com o Agente*, no mesmo
+  padrão da flag do PinPad (E-mail | Cloudflare Tunnel). No modo relay o BEC enfileira
+  a solicitação por HTTPS e **a resposta com o zip dos logs continua sendo por e-mail**
+- Implementado **apenas para o Agente Extrator**. `SERVERS_EP_SP` e `linx-webservices`
+  continuam por e-mail — a rede de SP não alcança o relay (verificado em 17/08/2026:
+  `ConnectFailure` na máquina do agente SP, enquanto o SMTP do Gmail funciona)
+- O payload leva `tipo=solicitacao_log`, PID, **usuário do Windows**, destino, loja, PDV,
+  lista de logs e data. O agente reconstrói o corpo chave/valor e reaproveita
+  integralmente o `processar_solicitacao_log`, então histórico, pastas, MFDE e o HTML
+  do e-mail de resposta seguem idênticos ao fluxo por e-mail
+- **Registro da ação na trilha por usuário** (`log/acoes_usuarios.log`) feito pelo próprio
+  agente ao consumir a fila, com usuário do Windows e PID — no modo relay não existe
+  e-mail para o agente classificar. O BEC **não** envia `[Registro Execucao]` nesse caso,
+  o que anularia o propósito do modo. A garantia de uma linha por PID continua valendo
+- Contexto de log (`usuario`/`PID`) é thread-local, então as linhas da extração saem
+  carimbadas com quem pediu, sem se misturar ao polling que roda em paralelo
+- **Polling único para todas as funcionalidades:** a thread sobe quando `pinpad_modo_comunicacao`
+  **ou** `logs_modo_comunicacao` está em `tunnel`, e o item da fila é despachado pelo campo
+  `tipo` (ausente = PinPad, preservando o comportamento anterior)
+- Extração roda em thread própria (leva minutos entre SMB e zip) para não travar o polling,
+  e é serializada por lock — duas extrações simultâneas competiriam pela mesma rede e disco
+- **Guarda contra reapresentação do mesmo pedido:** o relay só descarta o item pendente
+  quando recebe o `POST /resultado/<pid>` — o `GET /pendente` apenas lê. Como a extração
+  demora, o mesmo pedido reaparece em todos os polls de 2s; sem essa guarda cada ciclo
+  dispararia uma nova extração e um novo e-mail. O agente reserva o PID enquanto trata e
+  só libera depois de responder, e o envio do resultado tem 3 tentativas
+- Padrão de fábrica é `logs_modo_comunicacao=email` — o modo relay é ativado pela interface
+- Novo script de teste do relay (hoje `scripts/testar_relay.py`), que exercita a rota do
+  BEC com fila fictícia (9999/999), confere o payload no relay, a reconstrução do corpo
+  no agente e a guarda de reapresentação, sem tocar em nenhum PDV real
+- Agente Extrator em v1.2.0
+
+### 2.40.2 — 14/08/2026
+- Mesma correção da 2.40.1 aplicada aos outros dois e-mails de parametrização, que usavam o mesmo padrão de estilo repetido por célula e cresciam do mesmo jeito: **Relatório Parametrização** e **Parametrização PDV**
+- **Nenhuma coluna foi alterada** — só a forma de aplicar o estilo. O Relatório mantém o cabeçalho por PDV (PDV, IP, versão e os badges OK/DIV/ERR) com as linhas de parâmetro e status; o Parametrização PDV mantém as quatro colunas Parâmetro, Esperado, Atual e Status, com a constante como sublinha do parâmetro
+- Tamanhos após a correção, na seleção de 12 PDVs: Relatório Parametrização em **28,1 KB** e Parametrização PDV (um e-mail por PDV) em **7,5 KB** — ambos com folga larga para o limite de ~102 KB do Gmail
+- Agente Extrator em v1.1.2
+
+### 2.40.1 — 14/08/2026
+- **Corrige o e-mail "Verificar Parametrização" chegando cortado.** Com 12 PDVs o HTML gerado tinha 124 KB e o Gmail **corta a exibição de mensagens acima de ~102 KB** — o e-mail saía completo do agente (confirmado no `.eml`: todos os PDVs presentes e HTML terminando em `</html>`), mas o Gmail parava de exibir no meio do PDV 277, escondendo o restante
+- Os estilos repetidos em cada célula respondiam por **56% do arquivo** (71 KB em 749 atributos `style`). Passaram para classes CSS num bloco `<style>`, mantendo o visual idêntico
+- Resultado: **124 KB → 57,6 KB** para a mesma seleção de 12 PDVs. O limite de PDVs exibidos por inteiro subiu de ~9 para **21**
+- Agente Extrator em v1.1.1
+
+### 2.40.0 — 14/08/2026
+- **Agente Extrator — usuário e PID em cada linha do log.** O formato passou de `2026-08-14 12:09:26 [INFO] mensagem` para `2026-08-14 12:09:26 - [USUARIO] - [PID] - [INFO] mensagem`, com o usuário do Windows e o PID lidos do corpo do e-mail em tratamento. Linhas fora do contexto de um e-mail (subida do agente, polling do PinPad) usam `-` nos dois campos
+- O contexto é por thread, então o polling do PinPad, que roda em paralelo, nunca carimba o usuário/PID de um e-mail sendo tratado pela thread principal
+- **Nova trilha de ações por usuário — `log/acoes_usuarios.log`.** Arquivo cumulativo (sem rotação diária) com uma linha por ação, no formato `2026-08-14 11:33:00 - [odirl] - [HvRiORiQcj] - [Requisição API]`. Registra data/hora, usuário, PID e funcionalidade
+- Garantia de **uma única linha por PID**: o agente carrega os PIDs já gravados na subida e ignora repetições. Isso cobre o caso em que o BEC envia dois e-mails para a mesma ação com o mesmo PID (ex.: Atualizar Agente, que gera `[Atualizacao Agente]` e `[Registro Execucao]`) e também o reprocessamento de um e-mail relido após reinício
+- **Novo e-mail tratado: `[Registro Execucao]`.** As funcionalidades que o BEC executa sozinho (Exportar Oracle, Requisição API, MDM, PinPad em modo direto) não passam por agente nenhum; o BEC avisa por esse e-mail, e o agente registra a ação na trilha e marca a mensagem como lida. A data/hora usada é a do corpo (`DataHora`), que é quando o BEC de fato executou
+- Agente Extrator em v1.1.0
 
 ### 2.34.3 — 06/08/2026
 - `LEIA-ME.txt` do agente SP atualizado: a lista de logs passou a ser agrupada por servidor (14 logs, indicando quais também atendem datas anteriores) e ganhou a seção descrevendo o `portal-big-retail` e o `communication-big-retail`

@@ -20,6 +20,20 @@ from logger import logger, MAQUINA, USUARIO_WINDOWS
 
 ASSUNTO_PREFIXO = '[Registro Execucao]'
 
+# Canal alternativo de entrega (fila do relay). É instalado pelo extrator_logs na
+# subida, em vez de importado aqui, porque o extrator_logs já importa este módulo
+# — importar de volta fecharia um ciclo.
+_canal_relay = None
+
+
+def definir_canal_relay(func):
+    """Registra a função que publica um item na fila do relay.
+
+    Assinatura esperada: func(props, tipo, pid, corpo).
+    """
+    global _canal_relay
+    _canal_relay = func
+
 
 def gerar_pid(tamanho=10):
     caracteres = string.ascii_letters + string.digits
@@ -65,6 +79,33 @@ def registrar_execucao(props, funcionalidade, pid=None, detalhes=None):
     if str(props.get('registro_execucao', 'true')).strip().lower() != 'true':
         return pid
 
+    corpo = montar_corpo(funcionalidade, pid, detalhes)
+
+    # Canal: relay quando configurado e disponível, senão e-mail. O nome da
+    # funcionalidade e a DataHora vão no corpo, então o agente registra a ação na
+    # trilha exatamente igual nos dois caminhos.
+    via_relay = (
+        _canal_relay is not None
+        and str(props.get('registro_modo_comunicacao', 'email')).strip().lower() == 'tunnel'
+    )
+
+    if via_relay:
+        def _enviar():
+            try:
+                _canal_relay(props, 'registro_execucao', pid, corpo)
+                logger.info(f"Registro de execução enfileirado no relay: {funcionalidade} PID={pid}")
+            except Exception as e:
+                # Sem fallback para e-mail de propósito: o modo relay existe para
+                # não usar e-mail. A operação do usuário não é afetada, mas o
+                # registro se perde — por isso o aviso é explícito.
+                logger.warning(
+                    f"Falha ao enfileirar registro de execução de '{funcionalidade}' "
+                    f"no relay: {str(e)}. A ação NÃO foi registrada na trilha."
+                )
+
+        threading.Thread(target=_enviar, daemon=True).start()
+        return pid
+
     remetente = props.get('email_envio', '')
     senha = props.get('senha_envio', '')
     if not remetente or not senha:
@@ -72,7 +113,6 @@ def registrar_execucao(props, funcionalidade, pid=None, detalhes=None):
         return pid
 
     assunto = f"{ASSUNTO_PREFIXO} - [{funcionalidade}] - [{pid}]"
-    corpo = montar_corpo(funcionalidade, pid, detalhes)
 
     def _enviar():
         try:

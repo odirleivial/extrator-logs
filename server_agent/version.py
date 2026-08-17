@@ -5,4 +5,4 @@
 #
 # Informada no e-mail de resultado da atualização automática, enviado pelo
 # agente já reiniciado — portanto confirma qual build ficou em execução.
-__version__ = "1.0.2"
+__version__ = "1.5.0"

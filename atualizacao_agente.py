@@ -7,6 +7,7 @@
 #
 # Os assuntos ficam no config.properties (agente.<id>.assunto) para poderem ser
 # alinhados com o que os agentes vierem a implementar, sem alterar o BEC.
+import base64
 import hashlib
 import logging
 import os
@@ -23,6 +24,12 @@ logger = logging.getLogger('ExtratrorLogs')
 # antes de qualquer tentativa de envio.
 TAMANHO_MAXIMO_MB = 25
 EXTENSOES_PERMITIDAS = ('.zip', '.exe')
+
+# Teto do relay, medido contra o Worker em produção em 17/08/2026: o corpo JSON
+# precisa ficar abaixo de ~25 MB (limite de valor do KV). Como o pacote viaja em
+# base64, que infla 4/3, sobram ~18,6 MB de binário — 18 MB é a margem adotada.
+# (18 MB de binário = 24,0 MB de JSON, aceito; 19 MB = 25,3 MB, recusado com 500.)
+TAMANHO_MAXIMO_RELAY_MB = 18
 
 # O Gmail recusa executáveis mesmo dentro de arquivos compactados — o pacote do
 # agente traz .exe e .bat e chegava com o download desabilitado. Antes de anexar,
@@ -42,6 +49,12 @@ AGENTES_PADRAO = [
     {'id': 'extrator', 'nome': 'Agent Extrator Log', 'assunto': '[Atualizacao Agente]'},
     {'id': 'sp', 'nome': 'Server Agent SP', 'assunto': '[Atualizacao Agente SP]'},
 ]
+
+# Agentes que consomem a fila do relay. O Server Agent SP fica de fora por dois
+# motivos somados: a rede de SP não alcança o relay, e a fila é endereçada por
+# bec_loja/bec_pdv — que é a do Agent Extrator. Publicar o pacote do SP ali
+# entregaria o build errado ao extrator.
+AGENTES_COM_RELAY = ('extrator',)
 
 
 def obter_agentes(props):
@@ -117,6 +130,62 @@ def _preparar_pacote(caminho, pasta_temp, nome_pacote):
     return caminho, nome_pacote, renomeados
 
 
+def _empacotar_para_relay(caminho, pasta_temp, nome_pacote):
+    """Deixa o pacote pronto para a fila, sem a neutralização do Gmail.
+
+    Pelo relay não há filtro de anexo, então o ZIP segue exatamente como o
+    usuário escolheu. Um .exe avulso ainda é embrulhado, porque o agente sempre
+    espera um ZIP para extrair.
+    """
+    if not nome_pacote.lower().endswith('.exe'):
+        return caminho, nome_pacote
+
+    nome_zip = nome_pacote + '.zip'
+    destino = os.path.join(pasta_temp, nome_zip)
+    with zipfile.ZipFile(destino, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.write(caminho, arcname=nome_pacote)
+    return destino, nome_zip
+
+
+def _enviar_pelo_relay(props, agente, destino, caminho, nome_pacote, enfileirar_no_relay):
+    """Publica o pacote na fila do agente. Retorna (payload, http_status)."""
+    tamanho = os.path.getsize(caminho)
+    if tamanho > TAMANHO_MAXIMO_RELAY_MB * 1024 * 1024:
+        return {'sucesso': False, 'mensagem':
+                f'Pacote com {tamanho / 1024 / 1024:.1f} MB excede o limite de '
+                f'{TAMANHO_MAXIMO_RELAY_MB} MB do relay (o pacote viaja em base64, '
+                f'que ocupa 1/3 a mais).'}, 400
+
+    pid = gerar_pid()
+    sha256 = _sha256(caminho)
+    # Sem SufixoNeutro: nada foi renomeado, e o agente trata a ausência como
+    # "nenhum arquivo a restaurar".
+    corpo = _montar_corpo(agente, pid, destino, nome_pacote, tamanho, sha256, [])
+
+    with open(caminho, 'rb') as f:
+        conteudo_b64 = base64.b64encode(f.read()).decode('ascii')
+
+    logger.info(f"[Relay] Enfileirando atualização do agente '{agente['nome']}': {nome_pacote} "
+                f"({tamanho / 1024 / 1024:.2f} MB, {len(conteudo_b64) / 1024 / 1024:.2f} MB em base64) PID={pid}")
+
+    try:
+        enfileirar_no_relay(props, 'atualizacao_agente', pid, corpo, {'arquivo': conteudo_b64})
+    except Exception as e:
+        logger.error(f"[Relay] Falha ao enfileirar atualização: {e}")
+        return {'sucesso': False, 'mensagem': f'Erro ao enviar pelo relay: {e}'}, 500
+
+    # Sem registrar_execucao aqui: seria um segundo item na MESMA fila, com o
+    # mesmo PID, e o relay guarda um item só por loja/PDV — o registro
+    # sobrescreveria o pacote. Quem registra a ação é o agente, ao consumi-lo.
+    logger.info(f"[Relay] Atualização do agente '{agente['nome']}' enfileirada. PID={pid}")
+    return {
+        'sucesso': True,
+        'pid': pid,
+        'mensagem': f"Pacote '{nome_pacote}' enviado pelo relay para {agente['nome']}! "
+                    f"PID: {pid}. O resultado da instalação chega por e-mail.",
+    }, 200
+
+
 def _sha256(caminho):
     h = hashlib.sha256()
     with open(caminho, 'rb') as f:
@@ -151,8 +220,12 @@ def _montar_corpo(agente, pid, destino, nome_pacote, tamanho_bytes, sha256, reno
     return corpo
 
 
-def enviar_atualizacao(props, form, files, enviar_email_com_anexos):
-    """Valida a seleção e envia o pacote ao agente. Retorna (payload, http_status)."""
+def enviar_atualizacao(props, form, files, enviar_email_com_anexos, enfileirar_no_relay=None):
+    """Valida a seleção e envia o pacote ao agente. Retorna (payload, http_status).
+
+    O canal é escolhido por `atualizacao_modo_comunicacao`. O modo relay vale só
+    para o Agent Extrator: o Server Agent SP não alcança o relay da rede dele.
+    """
     id_agente = form.get('agente', '').strip()
     agentes = obter_agentes(props)
     agente = next((a for a in agentes if a['id'] == id_agente), None)
@@ -172,9 +245,18 @@ def enviar_atualizacao(props, form, files, enviar_email_com_anexos):
         permitidas = ', '.join(EXTENSOES_PERMITIDAS)
         return {'sucesso': False, 'mensagem': f'Formato não aceito. Envie um arquivo {permitidas}.'}, 400
 
+    # A fila do relay é endereçada por bec_loja/bec_pdv, que é a do Agent Extrator.
+    # Mandar o pacote do agente SP por ali entregaria o build errado ao extrator,
+    # então o relay fica restrito ao agente que de fato consome essa fila.
+    via_relay = (
+        enfileirar_no_relay is not None
+        and id_agente in AGENTES_COM_RELAY
+        and props.get('atualizacao_modo_comunicacao', 'email').strip().lower() == 'tunnel'
+    )
+
     remetente = props.get('email_envio', '')
     senha = props.get('senha_envio', '')
-    if not remetente or not senha:
+    if not via_relay and (not remetente or not senha):
         return {'sucesso': False, 'mensagem': 'E-mail remetente não configurado (aba Administrador).'}, 400
 
     pasta_temp = tempfile.mkdtemp(prefix='bec_pacote_')
@@ -186,6 +268,11 @@ def enviar_atualizacao(props, form, files, enviar_email_com_anexos):
 
         if not zipfile.is_zipfile(caminho) and not nome_pacote.lower().endswith('.exe'):
             return {'sucesso': False, 'mensagem': 'O arquivo não é um ZIP válido.'}, 400
+
+        if via_relay:
+            caminho, nome_relay = _empacotar_para_relay(caminho, pasta_temp, nome_pacote)
+            return _enviar_pelo_relay(props, agente, destino, caminho, nome_relay,
+                                      enfileirar_no_relay)
 
         caminho, nome_anexo, renomeados = _preparar_pacote(caminho, pasta_temp, nome_pacote)
 

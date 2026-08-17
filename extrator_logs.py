@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request, redirect, render_template_string, jsonify, send_from_directory, send_file, Blueprint
 from version import __version__
-import os, sys, random, string, json, smtplib, webbrowser, zipfile, logging, threading, uuid, mimetypes
+import os, sys, random, string, json, re, smtplib, webbrowser, zipfile, logging, threading, uuid, mimetypes
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -8,6 +8,7 @@ from email import encoders
 import oracledb, csv, subprocess
 from datetime import datetime
 from logger import logger, USUARIO_WINDOWS
+import execucao
 from execucao import registrar_execucao, gerar_pid
 from atualizacao_agente import obter_agentes, enviar_atualizacao, TAMANHO_MAXIMO_MB
 from parametrizacao_pdv import pagina_configurar_pdv, enviar_configuracao_pdv, verificar_configuracao_pdv, relatorio_parametrizacao, versao_pdv, reiniciar_pdv, fechar_pdv
@@ -122,6 +123,8 @@ PROP_SECTIONS = [
     ("# === Modo de instalação e comunicação ===",
      lambda k: k in ('modo_instalacao', 'bec_loja', 'bec_pdv',
                      'pinpad_porta', 'pinpad_modo_comunicacao',
+                     'logs_modo_comunicacao', 'pdv_modo_comunicacao',
+                     'registro_modo_comunicacao', 'atualizacao_modo_comunicacao',
                      'bec_tunnel_url', 'pinpad_tunnel_token', 'ignorar_lojas')),
     ("# === Lojas e PDVs disponíveis para seleção ===",
      lambda k: k == 'stores' or k.endswith('_pdvs')),
@@ -531,27 +534,27 @@ def configurar_pdv_page():
 
 @app.route('/enviar-config-pdv', methods=['POST'])
 def enviar_config_pdv_route():
-    return enviar_configuracao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+    return enviar_configuracao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_ao_agente)
 
 @app.route('/verificar-config-pdv', methods=['POST'])
 def verificar_config_pdv_route():
-    return verificar_configuracao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+    return verificar_configuracao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_ao_agente)
 
 @app.route('/relatorio-parametrizacao', methods=['POST'])
 def relatorio_parametrizacao_route():
-    return relatorio_parametrizacao(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+    return relatorio_parametrizacao(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_ao_agente)
 
 @app.route('/versao-pdv', methods=['POST'])
 def versao_pdv_route():
-    return versao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+    return versao_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_ao_agente)
 
 @app.route('/reiniciar-pdv', methods=['POST'])
 def reiniciar_pdv_route():
-    return reiniciar_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+    return reiniciar_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_ao_agente)
 
 @app.route('/fechar-pdv', methods=['POST'])
 def fechar_pdv_route():
-    return fechar_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_email_gmail)
+    return fechar_pdv(app, ler_config_completo, CONFIG_FILE, gerar_pid, enviar_ao_agente)
 
 @app.route('/requisicao-api')
 def requisicao_api_page():
@@ -652,6 +655,10 @@ def config():
         if pinpad_porta:
             props['pinpad_porta'] = pinpad_porta
         props['pinpad_modo_comunicacao'] = request.form.get('pinpad_modo_comunicacao', 'email')
+        props['logs_modo_comunicacao']   = request.form.get('logs_modo_comunicacao', 'email')
+        props['pdv_modo_comunicacao']    = request.form.get('pdv_modo_comunicacao', 'email')
+        props['registro_modo_comunicacao'] = request.form.get('registro_modo_comunicacao', 'email')
+        props['atualizacao_modo_comunicacao'] = request.form.get('atualizacao_modo_comunicacao', 'email')
         props['bec_tunnel_url']          = request.form.get('bec_tunnel_url', '').strip()
         props['pinpad_tunnel_token']     = request.form.get('pinpad_tunnel_token', '').strip()
 
@@ -785,7 +792,8 @@ def admin_atualizar_agente():
         logger.warning("Tentativa de atualizar agente com a aba Administrador desativada")
         return jsonify({'sucesso': False, 'mensagem': 'Aba Administrador não habilitada.'}), 403
 
-    payload, status = enviar_atualizacao(props, request.form, request.files, enviar_email_com_anexos)
+    payload, status = enviar_atualizacao(props, request.form, request.files,
+                                         enviar_email_com_anexos, _enfileirar_no_relay)
     return jsonify(payload), status
 
 
@@ -1104,6 +1112,120 @@ def montar_email_exportacao_oracle(params, status_consultas, caminhos_arquivos, 
     return corpo_txt, corpo_html
 
 
+# Assunto do e-mail -> tipo do item na fila do relay. É o que permite rotear as
+# funcionalidades de Manutenção PDV sem alterar o corpo que elas já montam: o
+# corpo segue igual nos dois canais, e o agente usa o mesmo handler.
+_TIPOS_RELAY_POR_ASSUNTO = (
+    ('[Parametrização PDV]',      'parametrizacao_pdv'),
+    ('[Verificar Parametrização]', 'verificar_parametrizacao'),
+    ('[Relatório Parametrização]', 'relatorio_parametrizacao'),
+    ('[Status PDV]',              'status_pdv'),
+    ('[Fechar PDV]',              'fechar_pdv'),
+    ('[Reiniciar PDV]',           'reiniciar_pdv'),
+)
+
+
+def _tipo_relay_do_assunto(assunto):
+    for marcador, tipo in _TIPOS_RELAY_POR_ASSUNTO:
+        if marcador in assunto:
+            return tipo
+    return None
+
+
+def _enfileirar_no_relay(props, tipo, pid, corpo, extras=None):
+    """Publica um item na fila do agente no relay.
+
+    Levanta RuntimeError em qualquer falha, para que as funcionalidades já
+    existentes tratem o erro pelo mesmo `except` que usavam com o e-mail.
+    """
+    worker_url = props.get('bec_tunnel_url', '').rstrip('/')
+    token      = props.get('pinpad_tunnel_token', '')
+    bec_loja   = props.get('bec_loja', '')
+    bec_pdv    = props.get('bec_pdv', '')
+
+    if not worker_url:
+        raise RuntimeError('URL do relay não configurada (Configurações → Modo de comunicação).')
+    if not bec_loja or not bec_pdv:
+        raise RuntimeError('Loja e PDV do BEC não configurados — é o par que identifica a fila do agente no relay.')
+
+    # A fila é endereçada pelo par loja/pdv do AGENTE (bec_loja/bec_pdv). O alvo
+    # de cada operação vai dentro do corpo, como no e-mail.
+    payload = {
+        'tipo':    tipo,
+        'pid':     pid,
+        'usuario': USUARIO_WINDOWS,
+        'corpo':   corpo,
+    }
+    if extras:
+        payload.update(extras)
+
+    logger.info(f"[Relay] Enfileirando {tipo} PID={pid} na fila {bec_loja}/{bec_pdv}")
+    status, _ = _worker_call('POST', f'{worker_url}/comando/{bec_loja}/{bec_pdv}', payload, token)
+    if status not in (200, 201):
+        raise RuntimeError(f'o relay recusou a solicitação (HTTP {status}). Verifique a URL e o token.')
+
+    logger.info(f"[Relay] {tipo} enfileirada com sucesso. PID: {pid}")
+
+
+# Deixa o registro de execução alcançar a fila do relay sem que o execucao.py
+# precise importar este módulo de volta.
+execucao.definir_canal_relay(_enfileirar_no_relay)
+
+
+def enviar_ao_agente(remetente, senha, destinatario, assunto, corpo):
+    """Entrega uma solicitação ao agente pelo canal configurado.
+
+    Tem de propósito a mesma assinatura de `enviar_email_gmail`: as
+    funcionalidades de Manutenção PDV recebem esta função no lugar dela e não
+    precisam saber qual canal está em uso. Cai no e-mail quando a flag da
+    funcionalidade está em `email` ou quando o assunto não é roteável.
+    """
+    tipo = _tipo_relay_do_assunto(assunto)
+    if not tipo:
+        return enviar_email_gmail(remetente, senha, destinatario, assunto, corpo)
+
+    props = ler_config_completo()
+    if props.get('pdv_modo_comunicacao', 'email').strip().lower() != 'tunnel':
+        return enviar_email_gmail(remetente, senha, destinatario, assunto, corpo)
+
+    # O PID já está no corpo montado pela funcionalidade — reaproveita em vez de
+    # gerar outro, para a trilha de ações casar com o que a tela mostrou.
+    m = re.search(r'PID:\s*(\S+)', corpo)
+    pid = m.group(1) if m else gerar_pid()
+    _enfileirar_no_relay(props, tipo, pid, corpo)
+
+
+def _solicitar_logs_via_relay(props, pid, loja, pdv, logs, email_destino, data_logs, corpo):
+    """Enfileira a solicitação de logs no relay, em vez de enviar e-mail.
+
+    Só o pedido deixa de usar e-mail: o agente responde com o zip dos logs por
+    e-mail, como sempre. O registro da ação na trilha de usuários é feito pelo
+    próprio agente ao consumir a fila — mandar aqui um [Registro Execucao] por
+    e-mail anularia justamente o que este modo evita.
+    """
+    # Campos soltos além do `corpo`: um agente ainda na v1.2.0 os espera, pois
+    # naquela versão a solicitação de log era transportada campo a campo.
+    extras = {
+        'destino': email_destino,
+        'loja':    loja,
+        'pdv':     pdv,
+        'logs':    ', '.join(logs),
+        'data':    data_logs,
+    }
+
+    try:
+        _enfileirar_no_relay(props, 'solicitacao_log', pid, corpo, extras)
+    except Exception as e:
+        logger.error(f"[Relay] Falha ao enfileirar solicitação de logs: {e}")
+        return jsonify({'sucesso': False, 'mensagem': f'Erro ao enviar a solicitação: {e}'}), 500
+
+    return jsonify({
+        'sucesso': True,
+        'mensagem': f'Solicitação enviada pelo relay! PID: {pid}. Os logs chegarão por e-mail em {email_destino}.',
+        'pid': pid,
+    })
+
+
 @app.route('/solicitar', methods=['POST'])
 def solicitar():
     props = ler_config_completo()
@@ -1137,6 +1259,13 @@ def solicitar():
     else:
         assunto = f"[Solicitação Log] - [{pid}]"
         corpo = f"PID: {pid}\nUsuario: {USUARIO_WINDOWS}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: {', '.join(logs)}\nData: {data_logs}"
+
+    # Canal de envio. O relay atende apenas o Agente Extrator (lojas de PDV): o
+    # Server Agent SP não alcança o relay da rede dele, e o linx-webservices segue
+    # o fluxo de e-mail de sempre. O corpo é o mesmo nos dois canais.
+    atendido_pelo_extrator = loja not in ('SERVERS_EP_SP', 'server_152')
+    if atendido_pelo_extrator and props.get('logs_modo_comunicacao', 'email').strip().lower() == 'tunnel':
+        return _solicitar_logs_via_relay(props, pid, loja, pdv, logs, email_destino, data_logs, corpo)
 
     try:
         remetente = props.get('email_envio', '')
@@ -1284,7 +1413,16 @@ def pinpad_comando():
             return jsonify({'sucesso': False, 'mensagem': 'URL do Worker não configurada. Acesse Configurações → Modo de comunicação.'}), 400
 
         pid = gerar_pid()
-        cmd_data = {'pid': pid, 'comando': comando, 'porta': porta}
+        # `usuario` é obrigatório: sem ele o agente não tem como carimbar as linhas
+        # de log nem registrar a ação na trilha por usuário. `tipo` explícito para
+        # não depender do default de compatibilidade do agente.
+        cmd_data = {
+            'tipo':    'pinpad',
+            'pid':     pid,
+            'usuario': USUARIO_WINDOWS,
+            'comando': comando,
+            'porta':   porta,
+        }
         logger.info(f"[Worker] Enviando PinPad [{comando}] loja={loja} pdv={pdv_id} PID={pid}")
 
         status, _ = _worker_call('POST', f'{worker_url}/comando/{loja}/{pdv_id}', cmd_data, token)
@@ -1293,10 +1431,10 @@ def pinpad_comando():
             return jsonify({'sucesso': False, 'mensagem': f'Erro ao enviar comando ao relay (HTTP {status}). Verifique a URL do Worker.'}), 500
 
         logger.info(f"[Worker] Comando [{comando}] enviado ao relay. PID={pid}")
-        registrar_execucao(props, 'PinPad', pid, {
-            'Comando': comando, 'Porta': porta, 'Modo': 'tunnel',
-            'Loja': loja, 'PDV': pdv_id,
-        })
+        # Sem registrar_execucao aqui, ao contrário do modo direto: o comando já
+        # passa pelo agente, que registra a ação na trilha ao consumi-lo. Um
+        # segundo POST com o mesmo PID, além de redundante, SOBRESCREVERIA o
+        # comando no relay — que guarda um único item por loja/PDV.
         return jsonify({'sucesso': True, 'mensagem': f'Comando [{comando}] enviado! O dispositivo deve responder em instantes.'})
     else:
         # Envia email para o agente extrator executar remotamente

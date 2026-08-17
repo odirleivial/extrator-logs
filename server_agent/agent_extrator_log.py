@@ -1,5 +1,6 @@
 import imaplib, email, smtplib
 import os, time, csv, zipfile, re, logging, ctypes, ctypes.wintypes, threading
+import base64 as _base64
 import winreg
 try:
     import urllib.request as _urllib_req
@@ -55,6 +56,29 @@ _log_date = None
 _logger = logging.getLogger('agente')
 _logger.setLevel(logging.INFO)
 
+# Cada linha do log leva o usuário do Windows e o PID da solicitação em curso —
+# ambos vêm do corpo do e-mail que está sendo tratado. Ficam em threading.local
+# porque o polling do PinPad roda em paralelo e não pode herdar o contexto de um
+# e-mail que a thread principal esteja processando.
+SEM_CONTEXTO = '-'
+_contexto = threading.local()
+
+def definir_contexto(usuario=None, pid=None):
+    _contexto.usuario = (usuario or '').strip() or SEM_CONTEXTO
+    _contexto.pid     = (pid or '').strip() or SEM_CONTEXTO
+
+def limpar_contexto():
+    definir_contexto()
+
+class _FiltroContexto(logging.Filter):
+    """Injeta usuario/pid no registro para o formatter poder usá-los."""
+    def filter(self, record):
+        record.usuario = getattr(_contexto, 'usuario', SEM_CONTEXTO)
+        record.pid     = getattr(_contexto, 'pid', SEM_CONTEXTO)
+        return True
+
+_logger.addFilter(_FiltroContexto())
+
 def _arquivar_log_anterior(data_anterior):
     """Renomeia o log fixo para agente_extrator_<data_anterior>.log.
     Se já existir arquivo para essa data (ex.: reinícios no mesmo dia), anexa o
@@ -101,7 +125,7 @@ def _atualizar_handler():
     _log_date = hoje
     handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
     handler.setFormatter(logging.Formatter(
-        '%(asctime)s [%(levelname)s] %(message)s',
+        '%(asctime)s - [%(usuario)s] - [%(pid)s] - [%(levelname)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     ))
     _logger.addHandler(handler)
@@ -117,6 +141,73 @@ def logd(msg):
     """Log nível DEBUG — só grava quando debug=true em agent.properties."""
     if _debug_mode:
         log(f'[DEBUG] {msg}', 'debug')
+
+# ---------------------------------------------------------------------------
+# Trilha de ações por usuário
+# ---------------------------------------------------------------------------
+# Arquivo cumulativo (nunca rotacionado) com uma linha por ação — uma por PID:
+#   2026-08-14 11:33:00 - [odirl] - [HvRiORiQcj] - [Requisição API]
+# Registra tanto o que chega para o agente executar quanto o que o BEC executa
+# sozinho e comunica pelo e-mail [Registro Execucao]. Como o BEC usa o mesmo PID
+# nos dois e-mails de uma mesma ação (ex.: Atualizar Agente), a checagem por PID
+# garante que a ação apareça uma única vez.
+ACOES_FILE = os.path.join(LOG_DIR, 'acoes_usuarios.log')
+
+_pids_registrados = None
+
+def _carregar_pids_registrados():
+    """Lê da própria trilha os PIDs já gravados, para não duplicar linha quando o
+    mesmo e-mail voltar a ser lido (reinício antes de marcá-lo como lido)."""
+    global _pids_registrados
+    if _pids_registrados is not None:
+        return _pids_registrados
+    _pids_registrados = set()
+    if os.path.exists(ACOES_FILE):
+        try:
+            with open(ACOES_FILE, 'r', encoding='utf-8', errors='replace') as f:
+                for linha in f:
+                    partes = linha.split(' - ')
+                    if len(partes) >= 3:
+                        _pids_registrados.add(partes[2].strip().strip('[]'))
+        except Exception as e:
+            print(f'[ACOES] Falha ao ler {ACOES_FILE}: {e}')
+    return _pids_registrados
+
+def _normalizar_data_hora(texto):
+    """Converte a DataHora do e-mail para o padrão do log. Sem valor válido, usa agora."""
+    texto = (texto or '').strip()
+    for fmt in ('%d/%m/%Y %H:%M:%S', '%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M:%S'):
+        try:
+            return datetime.strptime(texto, fmt).strftime('%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            continue
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+def registrar_acao_usuario(funcionalidade, pid, usuario, data_hora=''):
+    """Acrescenta a ação na trilha cumulativa. Retorna False se o PID já constar.
+
+    Nunca propaga exceção: falhar ao registrar não pode impedir a execução da
+    funcionalidade que o usuário pediu.
+    """
+    pid     = (pid or '').strip() or SEM_CONTEXTO
+    usuario = (usuario or '').strip() or SEM_CONTEXTO
+    funcionalidade = (funcionalidade or '').strip() or 'Desconhecida'
+
+    registrados = _carregar_pids_registrados()
+    # PID ausente não serve para identificar a ação — nesses casos sempre grava
+    if pid != SEM_CONTEXTO and pid in registrados:
+        return False
+
+    try:
+        quando = _normalizar_data_hora(data_hora)
+        with open(ACOES_FILE, 'a', encoding='utf-8') as f:
+            f.write(f'{quando} - [{usuario}] - [{pid}] - [{funcionalidade}]\n')
+        if pid != SEM_CONTEXTO:
+            registrados.add(pid)
+        return True
+    except Exception as e:
+        print(f'[ACOES] Falha ao registrar ação em {ACOES_FILE}: {e}')
+        return False
 
 # ---------------------------------------------------------------------------
 # Utilitários
@@ -256,6 +347,18 @@ def autenticar_unc(base_pdv, windows_user, windows_senha):
 def extrair_campo(corpo, campo):
     m = re.search(rf'{re.escape(campo)}:\s*(.+)', corpo)
     return m.group(1).strip() if m else ''
+
+def _marcar_lido(imap, num):
+    """Marca a mensagem como lida — sem efeito quando a solicitação não veio de
+    e-mail.
+
+    Os handlers `processar_*` atendem dois canais: o e-mail e a fila do relay. No
+    caminho do relay não existe mensagem para marcar, e `imap`/`num` chegam como
+    None.
+    """
+    if imap is None or num is None:
+        return
+    imap.store(num, '+FLAGS', '\\Seen')
 
 def ler_versao_pdv(base_pdv, props):
     """Lê a versão do PDV no arquivo versaoPDV.dat."""
@@ -404,6 +507,13 @@ def _parsear_data_solicitacao(texto):
 # Funcionalidade 1: Solicitação de Logs
 # ---------------------------------------------------------------------------
 def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
+    """Extrai os logs pedidos e devolve o zip por e-mail.
+
+    Serve os dois canais de entrada: o e-mail [Solicitação Log] e a fila do relay
+    (modo tunnel). No caminho do relay não existe mensagem para marcar como lida,
+    então `imap` e `num` chegam como None — a resposta com os arquivos continua
+    sendo por e-mail nos dois casos.
+    """
     pid      = extrair_campo(corpo, 'PID')
     destino  = extrair_campo(corpo, 'Destino')
     loja     = extrair_campo(corpo, 'Loja')
@@ -653,7 +763,7 @@ def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
                                f'[Logs][{loja}][{pdv}][{pid}]',
                                corpo_txt, nome_zip_path, corpo_html)
         log(f'Email enviado para {destino} | Arquivo: {nome_zip}')
-        imap.store(num, '+FLAGS', '\\Seen')
+        _marcar_lido(imap, num)
 
     except Exception as e:
         status_envio = 'Erro'
@@ -973,47 +1083,53 @@ def _processar_parametrizacao_pdv(pid, loja, pdv, base_pdv, lista_params, props,
         if not valor: return '—', ''
         return (valor[:limite] + '…', valor) if len(valor) > limite else (valor, valor)
 
-    COR = {'OK': '#1a7f4b', 'ERRO': '#b91c1c'}
-    BG  = {'OK': '#dcfce7', 'ERRO': '#fee2e2'}
     ICO = {'OK': '✔',       'ERRO': '✖'}
+    # Estilos repetidos por célula viram classes no <style> — o Gmail corta a
+    # exibição de e-mails acima de ~102 KB, e a repetição inflava o HTML.
+    CLS = {'OK': 'ok', 'ERRO': 'er'}
 
     linhas_html = ''
     linhas_txt  = ''
     for r in resultados:
         st      = r['status']
-        bg_row  = '' if st == 'OK' else "background:#fff5f5;"
-        badge   = (f"<span style='background:{BG[st]};color:{COR[st]};font-size:11px;"
-                   f"font-weight:bold;padding:3px 10px;border-radius:12px;display:inline-block'>"
-                   f"{ICO[st]} {st}</span>")
-        label_c = (f"<br><span style='color:#6b7280;font-size:11px'>{r['constante']}</span>"
+        cls_row = '' if st == 'OK' else " class='rw'"
+        badge   = f"<span class='b {CLS[st]}'>{ICO[st]} {st}</span>"
+        label_c = (f"<br><span class='cn'>{r['constante']}</span>"
                    if r['constante'] else '')
         esp_s, esp_f = truncar(r['esperado'])
         if r['erro']:
             atu_s, atu_f = truncar(r['erro'])
-            atu_cor = '#b91c1c'
+            atu_cls = 'c e'
         else:
             atu_s, atu_f = truncar(r['atual'])
-            atu_cor = '#374151'
+            atu_cls = 'c'
 
-        cel = "padding:10px 14px;border-bottom:1px solid #e5e7eb;font-size:12px"
         linhas_html += f"""
-            <tr style='{bg_row}'>
-              <td style='{cel};max-width:160px'>
-                <span style='font-family:monospace;font-size:12px;color:#1e293b'>{r['param']}</span>
-                {label_c}
-              </td>
-              <td style='{cel};color:#374151;max-width:140px' title='{esp_f}'>
-                <span style='display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>{esp_s}</span>
-              </td>
-              <td style='{cel};color:{atu_cor};max-width:140px' title='{atu_f}'>
-                <span style='display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>{atu_s}</span>
-              </td>
-              <td style='{cel};text-align:center;white-space:nowrap'>{badge}</td>
+            <tr{cls_row}>
+              <td class='k'><span class='m'>{r['param']}</span>{label_c}</td>
+              <td class='c' title='{esp_f}'><span class='v'>{esp_s}</span></td>
+              <td class='{atu_cls}' title='{atu_f}'><span class='v'>{atu_s}</span></td>
+              <td class='s'>{badge}</td>
             </tr>"""
         linhas_txt += f"\n[{st}] {r['param']} | {r['esperado'] or r['erro']}"
 
     corpo_html = f"""<!DOCTYPE html>
-<html><head><meta charset='utf-8'></head>
+<html><head><meta charset='utf-8'>
+<style>
+.k{{padding:10px 14px;border-bottom:1px solid #e5e7eb;font-size:12px;max-width:160px}}
+.c{{padding:10px 14px;border-bottom:1px solid #e5e7eb;font-size:12px;max-width:140px;color:#374151}}
+.e{{color:#b91c1c}}
+.s{{padding:10px 14px;border-bottom:1px solid #e5e7eb;font-size:12px;text-align:center;white-space:nowrap}}
+.v{{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.m{{font-family:monospace;font-size:12px;color:#1e293b}}
+.cn{{color:#6b7280;font-size:11px}}
+.b{{font-size:11px;font-weight:bold;padding:3px 10px;border-radius:12px;display:inline-block}}
+.ok{{background:#dcfce7;color:#1a7f4b}}
+.er{{background:#fee2e2;color:#b91c1c}}
+.rw{{background:#fff5f5}}
+.h{{padding:9px 14px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;border-bottom:1px solid #e5e7eb}}
+.hc{{padding:9px 14px;text-align:center;color:#6b7280;font-size:11px;text-transform:uppercase;border-bottom:1px solid #e5e7eb;width:90px}}
+</style></head>
 <body style='margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif'>
 <table width='100%' cellpadding='0' cellspacing='0' style='background:#f3f4f6;padding:24px 0'>
 <tr><td align='center'>
@@ -1072,14 +1188,10 @@ def _processar_parametrizacao_pdv(pid, loja, pdv, base_pdv, lista_params, props,
            style='border:1px solid #e5e7eb;border-radius:6px;overflow:hidden'>
       <thead>
         <tr style='background:#f8fafc'>
-          <th style='padding:9px 14px;text-align:left;color:#6b7280;font-size:11px;
-                     text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Parâmetro</th>
-          <th style='padding:9px 14px;text-align:left;color:#6b7280;font-size:11px;
-                     text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Esperado</th>
-          <th style='padding:9px 14px;text-align:left;color:#6b7280;font-size:11px;
-                     text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Atual</th>
-          <th style='padding:9px 14px;text-align:center;color:#6b7280;font-size:11px;
-                     text-transform:uppercase;border-bottom:1px solid #e5e7eb;width:90px'>Status</th>
+          <th class='h'>Parâmetro</th>
+          <th class='h'>Esperado</th>
+          <th class='h'>Atual</th>
+          <th class='hc'>Status</th>
         </tr>
       </thead>
       <tbody>{linhas_html}
@@ -1129,7 +1241,7 @@ def processar_parametrizacao(imap, num, corpo, props, email_user, email_pass):
                 log(f'[Parametrizacao] IP não configurado para PDV {pdv}', 'warning')
             _processar_parametrizacao_pdv(pid, loja, pdv, base_pdv, lista_params, props, email_user, email_pass, destino)
 
-    imap.store(num, '+FLAGS', '\\Seen')
+    _marcar_lido(imap, num)
 
 # ---------------------------------------------------------------------------
 # Funcionalidade 3: Verificar Parametrização
@@ -1153,7 +1265,7 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
 
     if not selecao:
         log('Campo Selecao ausente no e-mail de verificação.', 'error')
-        imap.store(num, '+FLAGS', '\\Seen')
+        _marcar_lido(imap, num)
         return
 
     windows_user  = props.get('windows_user', '')
@@ -1162,9 +1274,11 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
 
     grupos = _parsear_selecao(selecao, props)
 
-    COR = {'OK': '#1a7f4b', 'DIVERGENTE': '#b45309', 'ERRO': '#b91c1c'}
-    BG  = {'OK': '#dcfce7', 'DIVERGENTE': '#fef3c7', 'ERRO': '#fee2e2'}
     ICO = {'OK': '✔', 'DIVERGENTE': '⚠', 'ERRO': '✖'}
+    # Classe do badge por status. O relatório cresce com o número de PDVs e o
+    # Gmail corta a exibição do e-mail acima de ~102 KB — repetir o estilo em
+    # cada célula estourava esse limite. As classes ficam no <style> do <head>.
+    CLS = {'OK': 'ok', 'DIVERGENTE': 'dv', 'ERRO': 'er'}
 
     def truncar(valor, limite=45):
         if not valor:
@@ -1179,11 +1293,7 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
 
     for loja, pdvs in grupos.items():
         secoes_html += f"""
-        <tr><td colspan='4' style='padding:14px 28px 6px;background:#f8fafc;
-            border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb'>
-          <span style='font-size:12px;font-weight:bold;color:#1e3a5f;text-transform:uppercase;
-                       letter-spacing:.5px'>Loja {loja}</span>
-        </td></tr>"""
+        <tr><td colspan='4' class='lj'><span class='ljn'>Loja {loja}</span></td></tr>"""
         secoes_txt += f'\n\n=== Loja {loja} ==='
 
         for pdv in pdvs:
@@ -1205,17 +1315,14 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
             total_ok += n_ok; total_div += n_div; total_erro += n_err
 
             resumo_badges = (
-                f"<span style='background:#dcfce7;color:#1a7f4b;font-size:10px;font-weight:bold;"
-                f"padding:2px 8px;border-radius:10px;margin-right:4px'>{n_ok} OK</span>"
-                f"<span style='background:#fef3c7;color:#b45309;font-size:10px;font-weight:bold;"
-                f"padding:2px 8px;border-radius:10px;margin-right:4px'>{n_div} DIV</span>"
-                f"<span style='background:#fee2e2;color:#b91c1c;font-size:10px;font-weight:bold;"
-                f"padding:2px 8px;border-radius:10px'>{n_err} ERRO</span>"
+                f"<span class='b ok mr'>{n_ok} OK</span>"
+                f"<span class='b dv mr'>{n_div} DIV</span>"
+                f"<span class='b er'>{n_err} ERRO</span>"
             )
 
             secoes_html += f"""
         <tr><td colspan='4' style='padding:8px 28px 4px'>
-          <span style='font-size:11px;font-weight:bold;color:#374151'>PDV {pdv}</span>
+          <span class='pdv'>PDV {pdv}</span>
           &nbsp;&nbsp;{resumo_badges}
         </td></tr>"""
             secoes_txt += f'\n  --- PDV {pdv} ---'
@@ -1223,29 +1330,21 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
             linhas_html = ''
             for r in resultados:
                 st  = r['status']
-                cor = COR[st]; bg = BG[st]; ico = ICO[st]
+                ico = ICO[st]; cls = CLS[st]
                 nome_exibido = r['constante'] if r.get('constante') else r['param']
                 esp_curto, esp_full = truncar(r.get('esperado', ''))
                 if r.get('erro') and not r.get('atual'):
                     atu_curto, atu_full = truncar(r['erro'])
-                    atu_cor = '#b91c1c'
+                    atu_cls = 'c e'
                 else:
                     atu_curto, atu_full = truncar(r.get('atual', ''))
-                    atu_cor = '#374151'
-                cel = "padding:8px 14px;border-bottom:1px solid #e5e7eb;font-size:11px;max-width:150px"
+                    atu_cls = 'c'
                 linhas_html += f"""
             <tr>
-              <td style='{cel}'><span style='font-family:monospace;color:#1e293b'>{nome_exibido}</span></td>
-              <td style='{cel};color:#374151' title='{esp_full}'>
-                <span style='white-space:nowrap;overflow:hidden;display:block;max-width:140px;text-overflow:ellipsis'>{esp_curto}</span>
-              </td>
-              <td style='{cel};color:{atu_cor}' title='{atu_full}'>
-                <span style='white-space:nowrap;overflow:hidden;display:block;max-width:140px;text-overflow:ellipsis'>{atu_curto}</span>
-              </td>
-              <td style='padding:8px 14px;border-bottom:1px solid #e5e7eb;text-align:center;white-space:nowrap'>
-                <span style='background:{bg};color:{cor};font-weight:bold;font-size:10px;
-                             padding:2px 8px;border-radius:10px;display:inline-block'>{ico} {st}</span>
-              </td>
+              <td class='p'><span class='m'>{nome_exibido}</span></td>
+              <td class='c' title='{esp_full}'><span class='v'>{esp_curto}</span></td>
+              <td class='{atu_cls}' title='{atu_full}'><span class='v'>{atu_curto}</span></td>
+              <td class='s'><span class='b {cls}'>{ico} {st}</span></td>
             </tr>"""
                 secoes_txt += (
                     f"\n  [{st}] {nome_exibido}"
@@ -1255,13 +1354,12 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
 
             secoes_html += f"""
         <tr><td colspan='4' style='padding:0 28px 12px'>
-          <table width='100%' cellpadding='0' cellspacing='0'
-                 style='border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;font-size:12px'>
+          <table width='100%' cellpadding='0' cellspacing='0' class='t'>
             <thead><tr style='background:#f8fafc'>
-              <th style='padding:8px 14px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Parâmetro</th>
-              <th style='padding:8px 14px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Esperado</th>
-              <th style='padding:8px 14px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Atual</th>
-              <th style='padding:8px 14px;text-align:center;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb'>Status</th>
+              <th class='h'>Parâmetro</th>
+              <th class='h'>Esperado</th>
+              <th class='h'>Atual</th>
+              <th class='hc'>Status</th>
             </tr></thead>
             <tbody>{linhas_html}</tbody>
           </table>
@@ -1269,7 +1367,26 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
 
     if destino:
         corpo_html = f"""<!DOCTYPE html>
-<html><head><meta charset='utf-8'></head>
+<html><head><meta charset='utf-8'>
+<style>
+.p{{padding:8px 14px;border-bottom:1px solid #e5e7eb;font-size:11px;max-width:150px}}
+.c{{padding:8px 14px;border-bottom:1px solid #e5e7eb;font-size:11px;max-width:150px;color:#374151}}
+.e{{color:#b91c1c}}
+.s{{padding:8px 14px;border-bottom:1px solid #e5e7eb;text-align:center;white-space:nowrap}}
+.v{{white-space:nowrap;overflow:hidden;display:block;max-width:140px;text-overflow:ellipsis}}
+.m{{font-family:monospace;color:#1e293b}}
+.b{{font-weight:bold;font-size:10px;padding:2px 8px;border-radius:10px;display:inline-block}}
+.mr{{margin-right:4px}}
+.ok{{background:#dcfce7;color:#1a7f4b}}
+.dv{{background:#fef3c7;color:#b45309}}
+.er{{background:#fee2e2;color:#b91c1c}}
+.h{{padding:8px 14px;text-align:left;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb}}
+.hc{{padding:8px 14px;text-align:center;color:#6b7280;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e5e7eb}}
+.t{{border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;font-size:12px}}
+.lj{{padding:14px 28px 6px;background:#f8fafc;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb}}
+.ljn{{font-size:12px;font-weight:bold;color:#1e3a5f;text-transform:uppercase;letter-spacing:.5px}}
+.pdv{{font-size:11px;font-weight:bold;color:#374151}}
+</style></head>
 <body style='margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif'>
 <table width='100%' cellpadding='0' cellspacing='0' style='background:#f3f4f6;padding:24px 0'>
 <tr><td align='center'>
@@ -1330,7 +1447,7 @@ def processar_verificar_parametrizacao(imap, num, corpo, props, email_user, emai
         except Exception as e:
             log(f'Erro ao enviar resposta de verificação: {e}', 'error')
 
-    imap.store(num, '+FLAGS', '\\Seen')
+    _marcar_lido(imap, num)
 
 # ---------------------------------------------------------------------------
 # Funcionalidade 4: Relatório Parametrização
@@ -1441,7 +1558,7 @@ def processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, emai
 
     if not selecao:
         log('Campo Selecao ausente no e-mail de relatório.', 'error')
-        imap.store(num, '+FLAGS', '\\Seen')
+        _marcar_lido(imap, num)
         return
 
     windows_user  = props.get('windows_user', '')
@@ -1451,9 +1568,10 @@ def processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, emai
     # Parseia seleção filtrando lojas ignoradas
     grupos = _parsear_selecao(selecao, props)
 
-    COR = {'OK': '#1a7f4b', 'DIVERGENTE': '#b45309', 'ERRO': '#b91c1c'}
-    BG  = {'OK': '#dcfce7', 'DIVERGENTE': '#fef3c7', 'ERRO': '#fee2e2'}
     ICO = {'OK': '✔',       'DIVERGENTE': '⚠',       'ERRO': '✖'}
+    # Estilos repetidos por célula viram classes no <style> — o relatório cresce
+    # com o número de PDVs e o Gmail corta a exibição acima de ~102 KB.
+    CLS = {'OK': 'ok', 'DIVERGENTE': 'dv', 'ERRO': 'er'}
 
     total_ok = total_div = total_erro = 0
     secoes_html = ''
@@ -1461,11 +1579,7 @@ def processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, emai
 
     for loja, pdvs in grupos.items():
         secoes_html += f"""
-        <tr><td colspan='2' style='padding:14px 28px 6px;background:#f8fafc;
-            border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb'>
-          <span style='font-size:12px;font-weight:bold;color:#1e3a5f;text-transform:uppercase;
-                       letter-spacing:.5px'>Loja {loja}</span>
-        </td></tr>"""
+        <tr><td colspan='2' class='lj'><span class='ljn'>Loja {loja}</span></td></tr>"""
         secoes_txt += f'\n\n=== Loja {loja} ==='
 
         for pdv in pdvs:
@@ -1488,12 +1602,9 @@ def processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, emai
 
             # Badges de resumo do PDV
             resumo_badges = (
-                f"<span style='background:#dcfce7;color:#1a7f4b;font-size:10px;font-weight:bold;"
-                f"padding:2px 8px;border-radius:10px;margin-right:4px'>{n_ok} OK</span>"
-                f"<span style='background:#fef3c7;color:#b45309;font-size:10px;font-weight:bold;"
-                f"padding:2px 8px;border-radius:10px;margin-right:4px'>{n_div} DIV</span>"
-                f"<span style='background:#fee2e2;color:#b91c1c;font-size:10px;font-weight:bold;"
-                f"padding:2px 8px;border-radius:10px'>{n_err} ERR</span>"
+                f"<span class='b ok mr'>{n_ok} OK</span>"
+                f"<span class='b dv mr'>{n_div} DIV</span>"
+                f"<span class='b er'>{n_err} ERR</span>"
             )
 
             linhas_params = ''
@@ -1502,34 +1613,24 @@ def processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, emai
                 descricao = r['erro'] if r['erro'] else ''
                 linhas_params += f"""
                 <tr>
-                  <td style='padding:7px 14px;border-bottom:1px solid #f0f0f0;
-                             font-family:monospace;font-size:11px;color:#374151'>
-                    {r['param']}
-                  </td>
-                  <td style='padding:7px 14px;border-bottom:1px solid #f0f0f0;
-                             text-align:right;white-space:nowrap'>
-                    <span style='background:{BG[st]};color:{COR[st]};font-size:10px;font-weight:bold;
-                                 padding:2px 8px;border-radius:10px'>{ICO[st]} {st}</span>
-                    {'<br><span style="font-size:10px;color:#b91c1c">' + descricao[:50] + '…</span>' if descricao else ''}
+                  <td class='pm'>{r['param']}</td>
+                  <td class='st'>
+                    <span class='b {CLS[st]}'>{ICO[st]} {st}</span>
+                    {'<br><span class="ed">' + descricao[:50] + '…</span>' if descricao else ''}
                   </td>
                 </tr>"""
 
             secoes_html += f"""
         <tr><td colspan='2' style='padding:10px 28px'>
-          <table width='100%' cellpadding='0' cellspacing='0'
-                 style='border:1px solid #e5e7eb;border-radius:6px;overflow:hidden'>
+          <table width='100%' cellpadding='0' cellspacing='0' class='t'>
             <thead>
               <tr style='background:#f8fafc'>
-                <th style='padding:8px 14px;text-align:left;font-size:12px;color:#1e3a5f;font-weight:bold'>
+                <th class='th'>
                   PDV {pdv}
-                  <span style='font-size:11px;font-weight:normal;color:#6b7280;margin-left:4px'>
-                    ({base_pdv or 'IP não configurado'})
-                  </span>
-                  <span style='font-size:11px;font-weight:normal;color:#6b7280;margin-left:4px'>
-                    — Versão {versao_pdv}
-                  </span>
+                  <span class='sub'>({base_pdv or 'IP não configurado'})</span>
+                  <span class='sub'>— Versão {versao_pdv}</span>
                 </th>
-                <th style='padding:8px 14px;text-align:right'>{resumo_badges}</th>
+                <th class='thr'>{resumo_badges}</th>
               </tr>
             </thead>
             <tbody>{linhas_params}
@@ -1543,7 +1644,23 @@ def processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, emai
 
     if destino:
         corpo_html = f"""<!DOCTYPE html>
-<html><head><meta charset='utf-8'></head>
+<html><head><meta charset='utf-8'>
+<style>
+.pm{{padding:7px 14px;border-bottom:1px solid #f0f0f0;font-family:monospace;font-size:11px;color:#374151}}
+.st{{padding:7px 14px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap}}
+.b{{font-size:10px;font-weight:bold;padding:2px 8px;border-radius:10px}}
+.mr{{margin-right:4px}}
+.ok{{background:#dcfce7;color:#1a7f4b}}
+.dv{{background:#fef3c7;color:#b45309}}
+.er{{background:#fee2e2;color:#b91c1c}}
+.ed{{font-size:10px;color:#b91c1c}}
+.t{{border:1px solid #e5e7eb;border-radius:6px;overflow:hidden}}
+.th{{padding:8px 14px;text-align:left;font-size:12px;color:#1e3a5f;font-weight:bold}}
+.thr{{padding:8px 14px;text-align:right}}
+.sub{{font-size:11px;font-weight:normal;color:#6b7280;margin-left:4px}}
+.lj{{padding:14px 28px 6px;background:#f8fafc;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb}}
+.ljn{{font-size:12px;font-weight:bold;color:#1e3a5f;text-transform:uppercase;letter-spacing:.5px}}
+</style></head>
 <body style='margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif'>
 <table width='100%' cellpadding='0' cellspacing='0' style='background:#f3f4f6;padding:24px 0'>
 <tr><td align='center'>
@@ -1617,7 +1734,7 @@ def processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, emai
         except Exception as e:
             log(f'Erro ao enviar relatório: {e}', 'error')
 
-    imap.store(num, '+FLAGS', '\\Seen')
+    _marcar_lido(imap, num)
 
 # ---------------------------------------------------------------------------
 # Funcionalidade 5: PinPad
@@ -1632,7 +1749,7 @@ def processar_pinpad(imap, num, corpo, props, email_user, email_pass):
     comandos_validos = {'senha', 'enter', 'limpa', 'cartao'}
     if comando not in comandos_validos:
         log(f'[PinPad] Comando inválido: "{comando}"', 'error')
-        imap.store(num, '+FLAGS', '\\Seen')
+        _marcar_lido(imap, num)
         return
 
     ps_script = (
@@ -1664,7 +1781,7 @@ def processar_pinpad(imap, num, corpo, props, email_user, email_pass):
     except Exception as e:
         log(f'[PinPad] Exceção ao executar [{comando}]: {e}', 'error')
 
-    imap.store(num, '+FLAGS', '\\Seen')
+    _marcar_lido(imap, num)
 
 
 # ---------------------------------------------------------------------------
@@ -1742,7 +1859,7 @@ def processar_status_pdv(imap, num, corpo, props, email_user, email_pass):
 
     if not selecao:
         log('Campo Selecao ausente no e-mail de status.', 'error')
-        imap.store(num, '+FLAGS', '\\Seen')
+        _marcar_lido(imap, num)
         return
 
     windows_user  = props.get('windows_user', '')
@@ -1984,7 +2101,7 @@ def processar_status_pdv(imap, num, corpo, props, email_user, email_pass):
         except Exception as e:
             log(f'Erro ao enviar relatório de status: {e}', 'error')
 
-    imap.store(num, '+FLAGS', '\\Seen')
+    _marcar_lido(imap, num)
 
 # ---------------------------------------------------------------------------
 # Funcionalidade 7: Fechar / Reiniciar PDV
@@ -2101,7 +2218,7 @@ def processar_fechar_pdv(imap, num, corpo, props):
             status = 'OK' if sucesso else 'ERRO'
             log(f'[FecharPDV] Loja {loja} PDV {pdv} ({base_pdv}): {status} — {msg}')
 
-    imap.store(num, '+FLAGS', '\\Seen')
+    _marcar_lido(imap, num)
 
 def _reiniciar_maquina(base_pdv, props):
     """Reinicia a máquina do PDV via shutdown.exe. Retorna (sucesso, mensagem).
@@ -2154,11 +2271,54 @@ def processar_reiniciar_pdv(imap, num, corpo, props):
         log(f'[ReiniciarPDV] Reiniciar máquina Loja {loja} PDV {pdv} ({base_pdv}): '
             f'{"OK" if sucesso else "ERRO"} — {msg}')
 
-    imap.store(num, '+FLAGS', '\\Seen')
+    _marcar_lido(imap, num)
+
+# ---------------------------------------------------------------------------
+# Funcionalidade 9: Registro de execução do BEC
+# ---------------------------------------------------------------------------
+# Funcionalidades que o BEC executa sozinho (Exportar Oracle, Requisição API,
+# MDM, PinPad em modo direto) não passam por nenhum agente. Para que apareçam na
+# mesma trilha das demais, o BEC avisa por um e-mail [Registro Execucao], que o
+# agente apenas registra e marca como lido.
+def processar_registro_execucao(imap, num, corpo):
+    pid            = extrair_campo(corpo, 'PID')
+    usuario        = extrair_campo(corpo, 'Usuario')
+    funcionalidade = extrair_campo(corpo, 'Funcionalidade')
+    data_hora      = extrair_campo(corpo, 'DataHora')
+
+    log(f'[RegistroExecucao] Funcionalidade={funcionalidade} | Usuario={usuario} | '
+        f'DataHora={data_hora}')
+
+    if registrar_acao_usuario(funcionalidade, pid, usuario, data_hora):
+        log(f'[RegistroExecucao] Ação registrada na trilha de usuários.')
+    else:
+        log(f'[RegistroExecucao] PID já constava na trilha — linha não duplicada.')
+
+    _marcar_lido(imap, num)
 
 # ---------------------------------------------------------------------------
 # Loop principal de leitura de e-mails
 # ---------------------------------------------------------------------------
+# Nome da funcionalidade por assunto, para a trilha de ações por usuário.
+# [Registro Execucao] fica de fora: o nome vem do corpo do próprio e-mail.
+FUNCIONALIDADES_POR_ASSUNTO = (
+    ('[Solicitação Log]',        'Solicitar Logs'),
+    ('[Parametrização PDV]',     'Parametrização PDV'),
+    ('[Verificar Parametrização]', 'Verificar Parametrização'),
+    ('[Relatório Parametrização]', 'Relatório Parametrização'),
+    ('[Status PDV]',             'Status PDV'),
+    ('[Fechar PDV]',             'Fechar PDV'),
+    ('[Reiniciar PDV]',          'Reiniciar PDV'),
+    ('[PinPad]',                 'PinPad'),
+    ('[Atualizacao Agente]',     'Atualizar Agente'),
+)
+
+def _funcionalidade_do_assunto(assunto):
+    for marcador, nome in FUNCIONALIDADES_POR_ASSUNTO:
+        if marcador in assunto:
+            return nome
+    return None
+
 # ---------------------------------------------------------------------------
 # Funcionalidade 8: Atualização automática do agente
 # ---------------------------------------------------------------------------
@@ -2482,7 +2642,14 @@ def _disparar_script(script):
     return True
 
 
-def processar_atualizacao(imap, num, msg, corpo, props, email_user):
+def processar_atualizacao(imap, num, msg, corpo, props, email_user, dados_zip=None):
+    """Aplica o pacote de atualização recebido por e-mail ou pela fila do relay.
+
+    Pelo relay, o pacote chega em `dados_zip` (bytes já decodificados) e `msg` é
+    None. A autorização, nesse caminho, é o token do relay — só quem tem o token
+    consegue publicar na fila do agente —, então a checagem de remetente vale
+    apenas para o e-mail.
+    """
     import shutil
 
     pid     = extrair_campo(corpo, 'PID')
@@ -2497,15 +2664,18 @@ def processar_atualizacao(imap, num, msg, corpo, props, email_user):
 
     # O e-mail é marcado como lido antes de qualquer coisa: o serviço será
     # reiniciado no meio do processo e não pode reprocessar a mesma mensagem.
-    imap.store(num, '+FLAGS', '\\Seen')
+    _marcar_lido(imap, num)
 
     # Tudo dentro do try: uma falha aqui não pode derrubar o ciclo e impedir o
     # processamento das solicitações de log da mesma rodada.
     try:
-        autorizado, remetente = _remetente_autorizado(msg, props, email_user)
-        if not autorizado:
-            log(f'[Atualizacao] Remetente não autorizado: {remetente}. Pacote ignorado.', 'error')
-            return False
+        if dados_zip is None:
+            autorizado, remetente = _remetente_autorizado(msg, props, email_user)
+            if not autorizado:
+                log(f'[Atualizacao] Remetente não autorizado: {remetente}. Pacote ignorado.', 'error')
+                return False
+        else:
+            log('[Atualizacao] Pacote recebido pelo relay (autorizado pelo token).')
 
         if pid and _pid_ja_aplicado(pid):
             log(f'[Atualizacao] PID {pid} já aplicado anteriormente. Ignorando.', 'warning')
@@ -2515,7 +2685,16 @@ def processar_atualizacao(imap, num, msg, corpo, props, email_user):
         shutil.rmtree(pasta, ignore_errors=True)
         os.makedirs(pasta, exist_ok=True)
 
-        caminho_zip = _extrair_anexo_zip(msg, pasta)
+        if dados_zip is not None:
+            # Pelo relay o pacote vem no payload; grava com o nome informado para
+            # que o resto do fluxo (conferência, extração) siga igual ao do e-mail.
+            caminho_zip = os.path.join(pasta, os.path.basename(pacote or 'pacote.zip'))
+            with open(caminho_zip, 'wb') as f:
+                f.write(dados_zip)
+            log(f'[Atualizacao] Pacote gravado a partir da fila: {caminho_zip} '
+                f'({len(dados_zip)} bytes)')
+        else:
+            caminho_zip = _extrair_anexo_zip(msg, pasta)
         if not caminho_zip:
             log('[Atualizacao] E-mail sem anexo .zip. Nada a fazer.', 'error')
             return False
@@ -2610,49 +2789,66 @@ def buscar_emails_processar():
         assunto = decodifica_assunto(msg.get('Subject', ''))
         corpo   = extrair_corpo(msg)
 
-        if '[Solicitação Log]' in assunto:
-            log(f'Tratando e-mail: {assunto}')
-            processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass)
+        # Usuário do Windows (máquina que usou o BEC) e PID passam a acompanhar
+        # cada linha de log gerada durante o tratamento deste e-mail.
+        usuario_msg = extrair_campo(corpo, 'Usuario')
+        pid_msg     = extrair_campo(corpo, 'PID')
+        definir_contexto(usuario_msg, pid_msg)
 
-        elif '[Parametrização PDV]' in assunto:
-            log(f'Tratando e-mail: {assunto}')
-            processar_parametrizacao(imap, num, corpo, props, email_user, email_pass)
+        try:
+            funcionalidade = _funcionalidade_do_assunto(assunto)
+            if funcionalidade:
+                registrar_acao_usuario(funcionalidade, pid_msg, usuario_msg)
 
-        elif '[Verificar Parametrização]' in assunto:
-            log(f'Tratando e-mail: {assunto}')
-            processar_verificar_parametrizacao(imap, num, corpo, props, email_user, email_pass)
+            if '[Solicitação Log]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass)
 
-        elif '[Relatório Parametrização]' in assunto:
-            log(f'Tratando e-mail: {assunto}')
-            processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, email_pass)
+            elif '[Parametrização PDV]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                processar_parametrizacao(imap, num, corpo, props, email_user, email_pass)
 
-        elif '[Status PDV]' in assunto:
-            log(f'Tratando e-mail: {assunto}')
-            processar_status_pdv(imap, num, corpo, props, email_user, email_pass)
+            elif '[Verificar Parametrização]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                processar_verificar_parametrizacao(imap, num, corpo, props, email_user, email_pass)
 
-        elif '[Fechar PDV]' in assunto:
-            log(f'Tratando e-mail: {assunto}')
-            processar_fechar_pdv(imap, num, corpo, props)
+            elif '[Relatório Parametrização]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                processar_relatorio_parametrizacao(imap, num, corpo, props, email_user, email_pass)
 
-        elif '[Reiniciar PDV]' in assunto:
-            log(f'Tratando e-mail: {assunto}')
-            processar_reiniciar_pdv(imap, num, corpo, props)
+            elif '[Status PDV]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                processar_status_pdv(imap, num, corpo, props, email_user, email_pass)
 
-        elif '[PinPad]' in assunto:
-            log(f'Tratando e-mail: {assunto}')
-            processar_pinpad(imap, num, corpo, props, email_user, email_pass)
+            elif '[Fechar PDV]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                processar_fechar_pdv(imap, num, corpo, props)
 
-        elif '[Atualizacao Agente]' in assunto:
-            log(f'Tratando e-mail: {assunto}')
-            if processar_atualizacao(imap, num, msg, corpo, props, email_user):
-                # O serviço será parado pelo script; encerra o laço para não
-                # processar outros e-mails no meio da troca de arquivos. Eles
-                # continuam não lidos e serão tratados após o reinício.
-                break
+            elif '[Reiniciar PDV]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                processar_reiniciar_pdv(imap, num, corpo, props)
 
-        else:
-            log(f'Ignorando e-mail: {assunto}')
-            imap.store(num, '-FLAGS', '\\Seen')
+            elif '[PinPad]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                processar_pinpad(imap, num, corpo, props, email_user, email_pass)
+
+            elif '[Registro Execucao]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                processar_registro_execucao(imap, num, corpo)
+
+            elif '[Atualizacao Agente]' in assunto:
+                log(f'Tratando e-mail: {assunto}')
+                if processar_atualizacao(imap, num, msg, corpo, props, email_user):
+                    # O serviço será parado pelo script; encerra o laço para não
+                    # processar outros e-mails no meio da troca de arquivos. Eles
+                    # continuam não lidos e serão tratados após o reinício.
+                    break
+
+            else:
+                log(f'Ignorando e-mail: {assunto}')
+                imap.store(num, '-FLAGS', '\\Seen')
+        finally:
+            limpar_contexto()
 
     imap.logout()
 
@@ -2684,19 +2880,195 @@ def _executar_pinpad_local(comando, porta):
     return sucesso, saida
 
 
-def _tunnel_pinpad_loop(props):
-    """Thread de polling HTTP para modo Cloudflare Tunnel. Executa indefinidamente."""
-    loja  = props.get('loja', '')
-    pdv   = props.get('pdv', '')
-    url   = props.get('bec_tunnel_url', '').rstrip('/')
-    token = props.get('pinpad_tunnel_token', '')
-    porta = props.get('pinpad_porta', 'COM10')
+# Extrações de log são serializadas entre si: cópia por SMB e zip são pesados, e
+# duas extrações simultâneas competiriam pela mesma rede e pelo mesmo disco. Não
+# bloqueia o polling, que segue em outra thread atendendo PinPad no meio tempo.
+_lock_extracao_relay = threading.Lock()
+
+# O relay só descarta o item pendente quando recebe o POST /resultado/<pid> — o
+# GET /pendente apenas lê. Como a extração de logs leva minutos, o mesmo pedido
+# reaparece em todos os polls até a resposta ser enviada. Sem este controle, cada
+# ciclo de 2s dispararia uma nova extração e um novo e-mail para o mesmo PID.
+_pids_em_andamento = set()
+_lock_pids         = threading.Lock()
+
+
+def _reservar_pid(pid):
+    """Marca o PID como em tratamento. False se já havia sido reservado."""
+    with _lock_pids:
+        if pid in _pids_em_andamento:
+            return False
+        _pids_em_andamento.add(pid)
+        return True
+
+
+def _liberar_pid(pid):
+    with _lock_pids:
+        _pids_em_andamento.discard(pid)
+
+
+def _corpo_solicitacao_log(dados):
+    """Reconstrói o corpo chave/valor a partir do JSON da fila.
+
+    Assim o caminho do relay reaproveita integralmente o
+    `processar_solicitacao_log`, que já sabe interpretar esse formato — em vez de
+    duplicar a lógica de extração, histórico e montagem do e-mail.
+    """
+    return '\n'.join([
+        f"PID: {dados.get('pid', '')}",
+        f"Usuario: {dados.get('usuario', '')}",
+        f"Destino: {dados.get('destino', '')}",
+        f"Loja: {dados.get('loja', '')}",
+        f"PDV: {dados.get('pdv', '')}",
+        f"Logs: {dados.get('logs', '')}",
+        f"Data: {dados.get('data', '')}",
+    ])
+
+
+# Tipos aceitos na fila do relay. Cada entrada aponta para o mesmo handler que
+# atende o e-mail equivalente, o nome da funcionalidade na trilha de ações e se o
+# handler recebe as credenciais de e-mail (os que respondem ao solicitante) ou
+# não (os que apenas agem no PDV).
+#
+# O nome da funcionalidade tem de bater com FUNCIONALIDADES_POR_ASSUNTO, senão a
+# mesma ação apareceria na trilha com nomes diferentes conforme o canal usado.
+#   nome       : como a ação aparece na trilha. None quando o próprio handler a
+#                registra — é o caso do registro de execução, cujo nome vem do
+#                corpo e não do tipo.
+#   assinatura : 'completo'   = (imap, num, corpo, props, email_user, email_pass)
+#                'props'      = (imap, num, corpo, props)
+#                'simples'    = (imap, num, corpo)
+#                'atualizacao'= (imap, num, msg, corpo, props, email_user, dados_zip)
+#   serializa  : se concorre pela rede/disco dos PDVs e precisa do lock. O
+#                registro de execução só acrescenta uma linha em arquivo, e ficar
+#                atrás de uma extração de minutos o atrasaria sem motivo.
+#   ack_antes  : responde ao relay ANTES de executar. Só a atualização usa: ela
+#                para o serviço e troca o executável, então o processo morre no
+#                meio e a resposta nunca sairia. Sem o ack, o item ficaria preso
+#                no relay e voltaria a cada poll depois do reinício.
+_TIPOS_RELAY = {
+    'solicitacao_log':          ('Solicitar Logs',           'completo',    True,  False),
+    'parametrizacao_pdv':       ('Parametrização PDV',       'completo',    True,  False),
+    'verificar_parametrizacao': ('Verificar Parametrização', 'completo',    True,  False),
+    'relatorio_parametrizacao': ('Relatório Parametrização', 'completo',    True,  False),
+    'status_pdv':               ('Status PDV',               'completo',    True,  False),
+    'fechar_pdv':               ('Fechar PDV',               'props',       True,  False),
+    'reiniciar_pdv':            ('Reiniciar PDV',            'props',       True,  False),
+    'registro_execucao':        (None,                       'simples',     False, False),
+    'atualizacao_agente':       ('Atualizar Agente',         'atualizacao', True,  True),
+}
+
+
+def _handler_do_tipo(tipo):
+    """Resolve o handler na hora da chamada, não na definição do dicionário —
+    as funções `processar_*` são declaradas depois deste ponto no arquivo."""
+    return {
+        'solicitacao_log':          processar_solicitacao_log,
+        'parametrizacao_pdv':       processar_parametrizacao,
+        'verificar_parametrizacao': processar_verificar_parametrizacao,
+        'relatorio_parametrizacao': processar_relatorio_parametrizacao,
+        'status_pdv':               processar_status_pdv,
+        'fechar_pdv':               processar_fechar_pdv,
+        'reiniciar_pdv':            processar_reiniciar_pdv,
+        'registro_execucao':        processar_registro_execucao,
+        'atualizacao_agente':       processar_atualizacao,
+    }.get(tipo)
+
+
+def _tratar_item_relay(tipo, dados, props, email_user, email_pass, responder):
+    """Trata um item da fila do relay, em thread própria.
+
+    O corpo chega pronto no payload, no mesmo formato chave/valor do e-mail — o
+    handler é literalmente o mesmo dos dois canais, então o resultado (inclusive
+    o e-mail de resposta ao solicitante) sai idêntico.
+    """
+    funcionalidade, assinatura, serializa, ack_antes = _TIPOS_RELAY[tipo]
+    handler = _handler_do_tipo(tipo)
+
+    # `corpo` é a forma canônica. O fallback cobre um BEC ainda na v2.41.0, que
+    # mandava a solicitação de log em campos separados.
+    corpo   = dados.get('corpo') or _corpo_solicitacao_log(dados)
+    pid     = dados.get('pid', '') or extrair_campo(corpo, 'PID')
+    usuario = dados.get('usuario', '') or extrair_campo(corpo, 'Usuario')
+
+    # Contexto é thread-local: usuário e PID carimbam as linhas de log desta
+    # thread, sem vazar para o polling nem para outra solicitação em paralelo.
+    # Nome só para as mensagens de log — o registro na trilha vem logo abaixo
+    rotulo = funcionalidade or extrair_campo(corpo, 'Funcionalidade') or tipo
+
+    definir_contexto(usuario, pid)
+    try:
+        # Mesma trilha do caminho por e-mail. No modo tunnel não existe assunto
+        # para o agente classificar, então o registro é feito aqui — exceto
+        # quando o handler já o faz por conta própria (funcionalidade=None), caso
+        # em que registrar aqui gravaria o nome errado e a dedução por PID
+        # engoliria o registro correto que viria depois.
+        if funcionalidade and registrar_acao_usuario(funcionalidade, pid, usuario):
+            log(f'[Relay] Ação registrada na trilha: {funcionalidade} | usuario={usuario}')
+
+        log(f'[Relay] {rotulo} recebida pela fila — PID={pid}')
+
+        if ack_antes:
+            # Responde já: a atualização derruba este processo no meio do caminho,
+            # e o resultado real chega por e-mail quando a nova versão sobe.
+            log('[Relay] Respondendo ao relay antes de executar — o processo será reiniciado.')
+            responder(True, f'{rotulo} recebida; o resultado virá por e-mail.')
+
+        def _executar():
+            if assinatura == 'completo':
+                handler(None, None, corpo, props, email_user, email_pass)
+            elif assinatura == 'props':
+                handler(None, None, corpo, props)
+            elif assinatura == 'atualizacao':
+                dados_zip = _base64.b64decode(dados.get('arquivo', ''))
+                handler(None, None, None, corpo, props, email_user, dados_zip)
+            else:
+                handler(None, None, corpo)
+
+        if serializa:
+            # Serializa entre si tudo que mexe em PDV por SMB/rede: duas execuções
+            # simultâneas competiriam pela mesma rede e pelo mesmo disco.
+            with _lock_extracao_relay:
+                _executar()
+        else:
+            _executar()
+
+        if not ack_antes:
+            responder(True, f'{rotulo} executada pelo agente')
+    except Exception as ex:
+        log(f'[Relay] Erro ao tratar {rotulo} PID={pid}: {ex}', 'error')
+        if not ack_antes:
+            responder(False, str(ex))
+    finally:
+        # Só libera depois de responder: é a resposta que apaga o item no relay.
+        # Liberar antes abriria uma janela para o próximo poll reapresentar o
+        # mesmo pedido e disparar uma segunda execução.
+        _liberar_pid(pid)
+        limpar_contexto()
+
+
+def _tunnel_loop(props):
+    """Thread de polling HTTP do relay. Executa indefinidamente.
+
+    O campo `tipo` do item discrimina o tratamento:
+      - qualquer chave de `_TIPOS_RELAY` : delega ao mesmo handler do e-mail
+        equivalente, em thread própria (resposta ao solicitante segue por e-mail)
+      - `pinpad` ou ausente : comando serial no PinPad local, inline por ser
+        rápido — a ausência do campo preserva o comportamento legado
+    """
+    loja       = props.get('loja', '')
+    pdv        = props.get('pdv', '')
+    url        = props.get('bec_tunnel_url', '').rstrip('/')
+    token      = props.get('pinpad_tunnel_token', '')
+    porta      = props.get('pinpad_porta', 'COM10')
+    email_user = props.get('email', '')
+    email_pass = props.get('senha', '')
 
     if not loja or not pdv or not url:
         log('[Tunnel] loja, pdv ou bec_tunnel_url não configurados — polling desativado.', 'warning')
         return
 
-    log(f'[Tunnel] Iniciando polling PinPad para loja={loja} pdv={pdv} em {url}')
+    log(f'[Tunnel] Iniciando polling para loja={loja} pdv={pdv} em {url}')
 
     _HEADERS_BASE = {
         'X-Token': token,
@@ -2741,18 +3113,64 @@ def _tunnel_pinpad_loop(props):
             if _poll_count % 30 == 0:
                 log(f'[Worker] Polling ativo — {_poll_count} ciclos | último status HTTP: {status}')
             if status == 200 and body:
-                dados     = _json.loads(body)
-                pid       = dados.get('pid', '')
-                comando   = dados.get('comando', '')
-                porta_cmd = dados.get('porta', porta)
-                log(f'[Worker] Comando recebido: {comando} | PID={pid} | Porta={porta_cmd}')
-                try:
-                    sucesso, mensagem = _executar_pinpad_local(comando, porta_cmd)
-                except Exception as e:
-                    sucesso, mensagem = False, str(e)
-                log(f'[Worker] Resultado: sucesso={sucesso} | {mensagem}')
-                status_post = _post(f'/resultado/{pid}', {'sucesso': sucesso, 'mensagem': mensagem})
-                log(f'[Worker] Resultado enviado — HTTP {status_post}')
+                dados = _json.loads(body)
+                pid   = dados.get('pid', '')
+                # Itens antigos não têm `tipo`; a ausência significa PinPad, para
+                # não quebrar o que já estava em uso.
+                tipo  = (dados.get('tipo') or 'pinpad').strip().lower()
+
+                def _responder(sucesso, mensagem, _pid=pid):
+                    # É este POST que apaga o item pendente no relay. Se ele
+                    # falhar, o pedido fica na fila e voltaria em todo poll, por
+                    # isso vale insistir algumas vezes antes de desistir.
+                    for tentativa in range(1, 4):
+                        status_post = _post(f'/resultado/{_pid}', {'sucesso': sucesso, 'mensagem': mensagem})
+                        if status_post in (200, 201):
+                            log(f'[Worker] Resultado enviado — HTTP {status_post}')
+                            return
+                        log(f'[Worker] Falha ao enviar resultado de {_pid} '
+                            f'(tentativa {tentativa}/3) — HTTP {status_post}', 'warning')
+                        time.sleep(2)
+                    log(f'[Worker] Resultado de {_pid} não foi aceito pelo relay. '
+                        f'O item segue pendente e será ignorado até o agente reiniciar.', 'error')
+
+                if tipo in _TIPOS_RELAY:
+                    if not _reservar_pid(pid):
+                        # Item já em tratamento — o relay o mantém pendente até
+                        # recebermos o resultado. Silencioso de propósito: com
+                        # polling de 2s isso repetiria por toda a execução.
+                        logd(f'[Worker] Item PID={pid} já em andamento — ignorando reapresentação.')
+                    else:
+                        # Em thread separada: extrair logs ou percorrer vários PDVs
+                        # leva minutos, e o polling não pode parar esperando.
+                        threading.Thread(
+                            target=_tratar_item_relay,
+                            args=(tipo, dados, props, email_user, email_pass, _responder),
+                            daemon=True,
+                        ).start()
+                        log(f'[Worker] {_TIPOS_RELAY[tipo][0] or tipo} PID={pid} despachada para execução.')
+                else:
+                    comando   = dados.get('comando', '')
+                    porta_cmd = dados.get('porta', porta)
+                    usuario   = dados.get('usuario', '')
+
+                    # Mesmo tratamento dado aos demais tipos: contexto para as
+                    # linhas de log saírem com usuário/PID, e registro na trilha.
+                    # Executa inline por ser rápido (~2s), então o contexto é
+                    # limpo logo em seguida.
+                    definir_contexto(usuario, pid)
+                    try:
+                        if registrar_acao_usuario('PinPad', pid, usuario):
+                            log(f'[Worker] Ação registrada na trilha: PinPad | usuario={usuario}')
+                        log(f'[Worker] Comando recebido: {comando} | PID={pid} | Porta={porta_cmd}')
+                        try:
+                            sucesso, mensagem = _executar_pinpad_local(comando, porta_cmd)
+                        except Exception as e:
+                            sucesso, mensagem = False, str(e)
+                        log(f'[Worker] Resultado: sucesso={sucesso} | {mensagem}')
+                        _responder(sucesso, mensagem)
+                    finally:
+                        limpar_contexto()
         except Exception as ex:
             log(f'[Worker] Exceção no loop: {ex}', 'error')
         time.sleep(2)
@@ -2770,10 +3188,20 @@ def main():
     except Exception as ex:
         log(f'[Atualizacao] Erro ao enviar resultado pendente: {ex}', 'error')
 
-    if props.get('pinpad_modo_comunicacao', 'email') == 'tunnel':
-        t = threading.Thread(target=_tunnel_pinpad_loop, args=(props,), daemon=True)
+    # Um único polling atende todas as funcionalidades em modo tunnel; basta que
+    # uma delas esteja configurada assim para a thread subir.
+    modos = {
+        'PinPad':         props.get('pinpad_modo_comunicacao', 'email').strip().lower(),
+        'Solicitar Logs': props.get('logs_modo_comunicacao', 'email').strip().lower(),
+        'Manutenção PDV': props.get('pdv_modo_comunicacao', 'email').strip().lower(),
+        'Registro de Execução': props.get('registro_modo_comunicacao', 'email').strip().lower(),
+        'Atualizar Agente':     props.get('atualizacao_modo_comunicacao', 'email').strip().lower(),
+    }
+    ativos = [nome for nome, modo in modos.items() if modo == 'tunnel']
+    if ativos:
+        t = threading.Thread(target=_tunnel_loop, args=(props,), daemon=True)
         t.start()
-        log('[Tunnel] Thread de polling PinPad iniciada.')
+        log(f'[Tunnel] Thread de polling iniciada. Funcionalidades em modo tunnel: {", ".join(ativos)}')
 
     while True:
         try:

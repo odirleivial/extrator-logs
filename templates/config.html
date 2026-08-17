@@ -642,9 +642,22 @@
             <div class="card">
                 <h4>Modo de comunicação com o Agente</h4>
                 <small>Define como o BEC envia comandos ao Agente Extrator em cada funcionalidade. O modo <strong>Cloudflare Tunnel</strong> é direto e rápido (~2s); o modo <strong>E-mail</strong> é o padrão legado.</small>
+                <small style="display:block;margin-top:6px;color:#8a6d3b;">
+                    Em <strong>Solicitar Logs</strong> e <strong>Manutenção PDV</strong>, o modo Tunnel muda apenas
+                    o envio do pedido — o agente continua devolvendo os resultados por e-mail. Vale só para as
+                    lojas de PDV: <code>SERVERS_EP_SP</code> sempre usa e-mail, porque a rede de SP não alcança
+                    o relay. <strong>Manutenção PDV</strong> cobre Parametrização, Verificar e Relatório de
+                    Parametrização, Status, Fechar e Reiniciar PDV.
+                    <strong>Registro de Execução</strong> é a trilha de auditoria das funcionalidades que o
+                    BEC executa sozinho (Exportar Oracle, Requisição API, MDM) — em modo Tunnel, se o relay
+                    estiver fora do ar o registro se perde, pois não há reenvio por e-mail.
+                    <strong>Atualizar Agente</strong> vale apenas para o <em>Agent Extrator</em> — o
+                    <em>Server Agent SP</em> sempre usa e-mail. Em modo Tunnel o pacote vai em base64 e o
+                    limite cai de 25 MB para <strong>18 MB</strong>.
+                </small>
 
                 <div style="margin-top:14px;">
-                    {% set funcionalidades = [('pinpad', 'PinPad')] %}
+                    {% set funcionalidades = [('pinpad', 'PinPad'), ('logs', 'Solicitar Logs'), ('pdv', 'Manutenção PDV'), ('registro', 'Registro de Execução'), ('atualizacao', 'Atualizar Agente')] %}
                     {% for chave, label in funcionalidades %}
                     <div style="display:flex;align-items:center;gap:20px;padding:10px 0;border-bottom:1px solid #eef1f6;">
                         <span style="min-width:120px;font-weight:600;font-size:0.9rem;color:#444;">{{ label }}</span>
@@ -701,17 +714,21 @@
                         <summary style="cursor:pointer;font-size:0.82rem;color:#3a6bc7;font-weight:600;">&#128218; Como configurar o Cloudflare Worker (fazer uma vez, válido para todas as máquinas)</summary>
                         <ol style="font-size:0.82rem;color:#555;margin:8px 0 0 16px;line-height:1.8;">
                             <li>Acesse <strong>dash.cloudflare.com</strong> → Workers &amp; Pages → Create</li>
-                            <li>Cole o código do arquivo <code>cloudflare_worker/relay.js</code> da pasta do projeto</li>
+                            <li>Cole o código do arquivo <code>cloudflare_worker/worker.js</code> da pasta do projeto
+                                (instruções e endpoints em <code>cloudflare_worker/README.md</code>)</li>
                             <li>Em <strong>Settings → Variables</strong>, adicione:
                                 <code>TOKEN = &lt;seu token secreto&gt;</code></li>
                             <li>Em <strong>Settings → Variables → KV Namespace Bindings</strong>, crie um namespace chamado <code>bec-relay</code> e vincule com o nome de variável <code>KV</code></li>
                             <li>Salve e faça o deploy. Copie a URL gerada (ex: <code>https://bec-relay.usuario.workers.dev</code>)</li>
                             <li>Cole a URL e o token nos campos acima e salve</li>
-                            <li>No <code>agent.properties</code> de cada PDV, configure:<br>
+                            <li>No <code>agent.properties</code> do agente, configure:<br>
                                 <code>pinpad_modo_comunicacao=tunnel</code><br>
+                                <code>logs_modo_comunicacao=tunnel</code><br>
                                 <code>bec_tunnel_url=https://bec-relay.usuario.workers.dev</code><br>
                                 <code>pinpad_tunnel_token=&lt;mesmo token&gt;</code><br>
-                                <code>loja=0045 &nbsp; pdv=450</code></li>
+                                <code>loja=0045 &nbsp; pdv=450</code><br>
+                                <small>O par <code>loja</code>/<code>pdv</code> do agente precisa ser igual ao
+                                <strong>Loja/PDV do BEC</strong> acima — é o endereço da fila no relay.</small></li>
                         </ol>
                     </details>
                 </div>
