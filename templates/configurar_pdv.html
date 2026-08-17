@@ -122,11 +122,70 @@
             gap: 8px;
             margin-top: 16px;
         }
+        .popup-confirmacao {
+            display: none;
+            margin-top: 8px;
+        }
+        .popup-confirmacao-aviso {
+            background: #fff7ed;
+            border: 1px solid #f97316;
+            border-radius: 6px;
+            padding: 14px 16px;
+            margin-bottom: 14px;
+        }
+        .popup-confirmacao-aviso p {
+            margin: 0 0 4px;
+            font-size: 13px;
+            color: #7c2d12;
+        }
+        .popup-confirmacao-aviso strong { color: #c2410c; }
+        .popup-confirmacao-pdvs {
+            font-size: 12px;
+            color: #374151;
+            margin: 6px 0 0;
+            max-height: 80px;
+            overflow-y: auto;
+        }
+        .popup-confirmacao label {
+            display: block;
+            font-size: 13px;
+            margin-bottom: 6px;
+            color: #374151;
+        }
+        .popup-confirmacao input[type="text"] {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #d1d5db;
+            border-radius: 5px;
+            font-size: 14px;
+            box-sizing: border-box;
+            letter-spacing: 1px;
+        }
+        .popup-confirmacao input[type="text"]:focus {
+            outline: 2px solid #f97316;
+            border-color: #f97316;
+        }
+        #btn_confirmar_reiniciar {
+            background: #dc2626;
+            color: #fff;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+        }
+        #btn_confirmar_reiniciar:disabled {
+            background: #fca5a5;
+            cursor: default;
+        }
     </style>
     <script>
         var config = {{ config_props | tojson | safe }};
 
         var _popupAcao = null; // 'relatorio', 'versao', 'reiniciar', 'fechar', 'parametrizar' ou 'verificar'
+        var _pendingBody = null;  // body preparado aguardando confirmação (só reiniciar)
+        var _pendingRota = null;
 
         function mostrarAlerta(mensagem, tipo) {
             var alerta = document.getElementById("alerta");
@@ -252,7 +311,61 @@
 
         function fecharPopup() {
             document.getElementById("popup_overlay").style.display = "none";
+            _ocultarConfirmacao();
             _popupAcao = null;
+            _pendingBody = null;
+            _pendingRota = null;
+        }
+
+        function _ocultarConfirmacao() {
+            var conf = document.getElementById("popup_confirmacao");
+            var selecao = document.getElementById("popup_selecao_area");
+            var actions = document.getElementById("popup_actions");
+            if (conf)    { conf.style.display = "none"; }
+            if (selecao) { selecao.style.display = ""; }
+            if (actions) { actions.style.display = ""; }
+            var inp = document.getElementById("popup_conf_input");
+            if (inp) { inp.value = ""; }
+            var btn = document.getElementById("btn_confirmar_reiniciar");
+            if (btn) btn.disabled = true;
+        }
+
+        function _mostrarConfirmacao(selecaoTexto) {
+            var conf = document.getElementById("popup_confirmacao");
+            var selecao = document.getElementById("popup_selecao_area");
+            var actions = document.getElementById("popup_actions");
+            if (selecao) selecao.style.display = "none";
+            if (actions) actions.style.display = "none";
+            document.getElementById("popup_conf_pdvs").textContent = selecaoTexto;
+            var inp = document.getElementById("popup_conf_input");
+            inp.value = "";
+            document.getElementById("btn_confirmar_reiniciar").disabled = true;
+            conf.style.display = "block";
+            inp.focus();
+        }
+
+        function _onConfInputChange(inp) {
+            document.getElementById("btn_confirmar_reiniciar").disabled =
+                inp.value.trim().toLowerCase() !== "reiniciar";
+        }
+
+        function confirmarReiniciar() {
+            var inp = document.getElementById("popup_conf_input");
+            if (!inp || inp.value.trim().toLowerCase() !== "reiniciar") {
+                inp.focus(); return;
+            }
+            fetch(_pendingRota, {
+                method: "POST",
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                body: _pendingBody
+            }).then(r => r.json()).then(d => {
+                if (d.sucesso) { mostrarAlerta(d.mensagem, "sucesso"); fecharPopup(); }
+                else { mostrarAlerta("Erro: " + d.mensagem, "erro"); fecharPopup(); }
+            }).catch(err => { mostrarAlerta("Erro na solicitação: " + err, "erro"); fecharPopup(); });
+        }
+
+        function voltarSelecao() {
+            _ocultarConfirmacao();
         }
 
         function toggleSelTudoLojas(cb) {
@@ -393,6 +506,23 @@
                 body += "&parametros=" + encodeURIComponent(parametros.join(','));
             }
 
+            if (_popupAcao === 'reiniciar') {
+                // Monta resumo legível dos PDVs selecionados para exibir na confirmação
+                var resumo = Array.from(document.querySelectorAll(".popup-pdv-cb:checked"))
+                    .reduce(function(acc, cb) {
+                        acc[cb.dataset.loja] = acc[cb.dataset.loja] || [];
+                        acc[cb.dataset.loja].push(cb.value);
+                        return acc;
+                    }, {});
+                var resumoTexto = Object.entries(resumo)
+                    .map(function(e) { return "Loja " + e[0] + " — PDVs: " + e[1].join(", "); })
+                    .join("\n");
+                _pendingBody = body;
+                _pendingRota = rota;
+                _mostrarConfirmacao(resumoTexto);
+                return;
+            }
+
             fetch(rota, {
                 method: "POST",
                 headers: {"Content-Type": "application/x-www-form-urlencoded"},
@@ -414,21 +544,41 @@
     <div class="popup-box">
         <h3 id="popup_titulo">Popup</h3>
 
-        <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:6px">
-            <label class="sel-tudo-row" style="margin-bottom:0">
-                <input type="checkbox" id="popup_sel_tudo_lojas" onchange="toggleSelTudoLojas(this)">
-                Selecionar todas as lojas
-            </label>
-            <label class="sel-tudo-row" style="margin-bottom:0">
-                <input type="checkbox" id="popup_sel_tudo_pdvs" onchange="toggleSelTudoPdvs(this)">
-                Selecionar todos os PDVs
-            </label>
+        <!-- Passo 1: seleção de lojas/PDVs -->
+        <div id="popup_selecao_area">
+            <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:6px">
+                <label class="sel-tudo-row" style="margin-bottom:0">
+                    <input type="checkbox" id="popup_sel_tudo_lojas" onchange="toggleSelTudoLojas(this)">
+                    Selecionar todas as lojas
+                </label>
+                <label class="sel-tudo-row" style="margin-bottom:0">
+                    <input type="checkbox" id="popup_sel_tudo_pdvs" onchange="toggleSelTudoPdvs(this)">
+                    Selecionar todos os PDVs
+                </label>
+            </div>
+            <div id="popup_lojas_grid" class="rel-lojas-grid"></div>
+            <div class="rel-pdvs-section" id="popup_pdvs_section"></div>
         </div>
-        <div id="popup_lojas_grid" class="rel-lojas-grid"></div>
 
-        <div class="rel-pdvs-section" id="popup_pdvs_section"></div>
+        <!-- Passo 2: confirmação (só para Reiniciar PDV) -->
+        <div id="popup_confirmacao" class="popup-confirmacao">
+            <div class="popup-confirmacao-aviso">
+                <p><strong>⚠ Atenção:</strong> Esta ação irá reiniciar os PDVs selecionados.</p>
+                <p>Os PDVs serão afetados:</p>
+                <pre id="popup_conf_pdvs" class="popup-confirmacao-pdvs"></pre>
+            </div>
+            <label for="popup_conf_input">Para confirmar, digite <strong>reiniciar</strong> abaixo:</label>
+            <input type="text" id="popup_conf_input" placeholder="reiniciar" autocomplete="off"
+                   oninput="_onConfInputChange(this)"
+                   onkeydown="if(event.key==='Enter') confirmarReiniciar()">
+            <div class="popup-actions" style="margin-top:14px">
+                <button id="btn_confirmar_reiniciar" type="button" onclick="confirmarReiniciar()" disabled>Confirmar reinicialização</button>
+                <button type="button" onclick="voltarSelecao()">Voltar</button>
+                <button type="button" onclick="fecharPopup()">Cancelar</button>
+            </div>
+        </div>
 
-        <div class="popup-actions">
+        <div id="popup_actions" class="popup-actions">
             <button type="button" onclick="enviarPopup()">Enviar</button>
             <button type="button" onclick="fecharPopup()">Cancelar</button>
         </div>
