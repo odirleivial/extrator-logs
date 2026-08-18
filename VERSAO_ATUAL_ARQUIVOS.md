@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
 **Data:** 17 de Agosto de 2026  
-**Versão:** 2.45.0
+**Versão:** 2.45.1
 
 ---
 
@@ -101,6 +101,23 @@ seguinte de 2 s. Consistência forte exigiria migrar a fila para Durable Objects
 ---
 
 ## 📋 Histórico de Versões
+
+### 2.45.1 — 18/08/2026
+- **Corrige o download de logs falhando por timeout.** No primeiro download real o
+  agente extraiu, subiu o ZIP (331 KB) e reportou sucesso — e o BEC estourou o timeout
+  exatamente 10s depois. O `_worker_call` usava `timeout=10` fixo, adequado para JSON
+  pequeno e curto demais para transferir arquivo
+- O timeout passou a ser por chamada: **300s com 3 tentativas** no download do arquivo,
+  300s no envio do pacote de atualização (que leva 11 MB em base64 no payload), 30s no
+  status e na remoção do objeto, 10s no que é chamada curta
+- **Retentativa em falha de rede, mas não em erro HTTP** — resposta do servidor não
+  melhora repetindo. A rede das máquinas de teste até a Cloudflare oscila: só no dia
+  18/08 o log do BEC acumulou 184 timeouts de leitura e de handshake
+- **A falha do download virou página, não JSON cru.** A tela chega à rota por navegação,
+  para o navegador abrir o "salvar como"; devolver JSON deixava o usuário olhando para
+  texto cru no lugar da aplicação. Agora vem uma página explicando a causa provável
+  (conexão expirada × arquivo já baixado) com o link de volta
+- Agente sem alteração — segue em v1.7.0
 
 ### 2.45.0 — 18/08/2026
 - **Solicitar Logs ganhou o botão Download**, no mesmo padrão do Exportar Oracle: dois

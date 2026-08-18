@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request, redirect, render_template_string, jsonify, send_from_directory, send_file, Blueprint
 from version import __version__
-import os, sys, random, string, json, re, smtplib, webbrowser, zipfile, logging, threading, uuid, mimetypes
+import os, sys, random, string, json, re, smtplib, time, webbrowser, zipfile, logging, threading, uuid, mimetypes
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -1160,7 +1160,10 @@ def _enfileirar_no_relay(props, tipo, pid, corpo, extras=None):
         payload.update(extras)
 
     logger.info(f"[Relay] Enfileirando {tipo} PID={pid} na fila {bec_loja}/{bec_pdv}")
-    status, _ = _worker_call('POST', f'{worker_url}/comando/{bec_loja}/{bec_pdv}', payload, token)
+    # O payload carrega o pacote de atualizacao do agente (11 MB em base64), entao
+    # o timeout precisa ser de transferencia, nao de chamada curta.
+    status, _ = _worker_call('POST', f'{worker_url}/comando/{bec_loja}/{bec_pdv}', payload,
+                             token, timeout=300, tentativas=2)
     if status not in (200, 201):
         raise RuntimeError(f'o relay recusou a solicitação (HTTP {status}). Verifique a URL e o token.')
 
@@ -1254,7 +1257,7 @@ def solicitar_status(pid):
     if not worker_url:
         return jsonify({'pronto': False, 'erro': 'URL do relay não configurada'}), 400
 
-    status, corpo = _worker_call('GET', f'{worker_url}/resultado/{pid}', token=token)
+    status, corpo = _worker_call('GET', f'{worker_url}/resultado/{pid}', token=token, timeout=30)
     if status == 204:
         return jsonify({'pronto': False})       # agente ainda trabalhando
     if status != 200:
@@ -1292,12 +1295,41 @@ def solicitar_baixar(pid):
     info = _RESULTADOS_LOG.get(pid, {})
     nome = os.path.basename(info.get('arquivo') or f'LOG-{pid}.zip')
 
-    status, conteudo = _worker_call('GET', f'{worker_url}/arquivo/{pid}', token=token)
+    # Transferencia de arquivo: timeout generoso e retentativa, porque a rede das
+    # maquinas de teste ate a Cloudflare oscila. Com os 10s do padrao, um ZIP de
+    # 331 KB ja estourava.
+    status, conteudo = _worker_call('GET', f'{worker_url}/arquivo/{pid}', token=token,
+                                    timeout=300, tentativas=3)
     if status != 200 or not conteudo:
         logger.error(f"[Relay] Download do arquivo {pid} falhou: HTTP {status}")
-        return jsonify({'sucesso': False,
-                        'mensagem': f'Arquivo não disponível no relay (HTTP {status}). '
-                                    f'Ele expira depois de baixado ou por tempo.'}), 404
+        # A tela chega aqui por navegação, para o navegador abrir o "salvar como".
+        # Devolver JSON deixaria o usuário olhando para um texto cru no lugar da
+        # aplicação, então o erro vem como página, com o caminho de volta.
+        if status == 0:
+            detalhe = ('A conexão com o relay expirou. A rede desta máquina até a '
+                       'Cloudflare pode estar lenta — tente baixar de novo.')
+        elif status == 404:
+            detalhe = ('O arquivo não está mais no relay. Ele é apagado assim que '
+                       'baixado, e expira sozinho em 1 dia.')
+        else:
+            detalhe = f'O relay respondeu HTTP {status}.'
+        return render_template_string("""
+            <html><head><meta charset="utf-8"><title>Download não concluído</title></head>
+            <body style="font-family:Segoe UI,Arial,sans-serif;background:#f3f4f6;padding:40px">
+              <div style="max-width:620px;margin:auto;background:#fff;border-radius:8px;
+                          padding:28px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+                <h2 style="margin:0 0 8px;color:#b91c1c">Download não concluído</h2>
+                <p style="color:#374151;font-size:14px;line-height:1.6">{{ detalhe }}</p>
+                <p style="color:#6b7280;font-size:12px">PID: <code>{{ pid }}</code></p>
+                <p style="color:#6b7280;font-size:12px">
+                  Se o problema persistir, solicite novamente com
+                  <strong>Enviar por E-mail</strong>.</p>
+                <a href="/solicitar-logs" style="display:inline-block;margin-top:12px;
+                   background:#1e3a5f;color:#fff;padding:10px 18px;border-radius:6px;
+                   text-decoration:none;font-size:14px">Voltar</a>
+              </div>
+            </body></html>
+        """, detalhe=detalhe, pid=pid), 404
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     caminho = os.path.join(OUTPUT_DIR, nome)
@@ -1306,7 +1338,7 @@ def solicitar_baixar(pid):
     logger.info(f"[Relay] Arquivo de logs baixado: {nome} ({len(conteudo)} bytes)")
 
     # Libera o espaço no bucket: o arquivo já está no disco de quem pediu.
-    _worker_call('DELETE', f'{worker_url}/arquivo/{pid}', token=token)
+    _worker_call('DELETE', f'{worker_url}/arquivo/{pid}', token=token, timeout=30, tentativas=2)
     _RESULTADOS_LOG.pop(pid, None)
 
     return send_file(caminho, as_attachment=True, download_name=nome)
@@ -1420,8 +1452,17 @@ IMG_DIR = os.path.abspath(os.path.join(APP_DIR, 'img'))
 PINPAD_PORTA_PADRAO = 'COM10'
 
 
-def _worker_call(method, url, data=None, token=''):
-    """Faz uma chamada HTTP simples ao Cloudflare Worker."""
+def _worker_call(method, url, data=None, token='', timeout=10, tentativas=1):
+    """Faz uma chamada HTTP ao Cloudflare Worker.
+
+    `timeout` é por tentativa e precisa acompanhar o tamanho do que trafega: 10s
+    serve para JSON pequeno, mas derruba transferência de arquivo. Foi o que
+    aconteceu no primeiro download real — o agente subiu o ZIP e reportou
+    sucesso, e o BEC estourou o timeout exatamente 10s depois.
+
+    `tentativas` existe porque a rede das máquinas de teste até a Cloudflare
+    oscila: timeout de leitura e de handshake aparecem com frequência no log.
+    """
     import urllib.request as _req
     import urllib.error   as _err
     headers = {
@@ -1434,15 +1475,24 @@ def _worker_call(method, url, data=None, token=''):
         headers['Content-Type'] = 'application/json'
     else:
         body = None
-    req = _req.Request(url, data=body, headers=headers, method=method)
-    try:
-        with _req.urlopen(req, timeout=10) as resp:
-            return resp.status, resp.read()
-    except _err.HTTPError as e:
-        return e.code, b''
-    except Exception as e:
-        logger.warning(f'[Worker] Erro HTTP {method} {url}: {e}')
-        return 0, b''
+
+    ultimo_erro = None
+    for tentativa in range(1, max(1, tentativas) + 1):
+        req = _req.Request(url, data=body, headers=headers, method=method)
+        try:
+            with _req.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read()
+        except _err.HTTPError as e:
+            return e.code, b''          # resposta do servidor: repetir não ajuda
+        except Exception as e:
+            ultimo_erro = e
+            if tentativa < tentativas:
+                logger.warning(f'[Worker] {method} {url} falhou (tentativa '
+                               f'{tentativa}/{tentativas}): {e} — repetindo')
+                time.sleep(2)
+
+    logger.warning(f'[Worker] Erro HTTP {method} {url}: {ultimo_erro}')
+    return 0, b''
 
 
 @app.route('/pinpad')
