@@ -124,9 +124,30 @@ R2 esse teto sai do caminho e os 33% do base64 deixam de ser desperdiçados.
 O KV continua servindo para o que é pequeno: a fila e o aviso de que o arquivo
 está pronto (nome, tamanho, sha256).
 
-O BEC apaga o objeto assim que baixa, então o bucket não acumula. Vale configurar
-também uma **regra de lifecycle** no bucket (expirar em 1 dia) para varrer o que
-sobrar de um download que nunca aconteceu.
+### Lifecycle do bucket (fazer uma vez)
+
+O BEC apaga o objeto assim que baixa, então em uso normal o bucket não acumula. O
+que sobra é o download abandonado — o tester fecha a janela antes de o arquivo
+chegar, e o objeto fica lá ocupando espaço para sempre.
+
+O R2 **não** tem validade por objeto (ao contrário do KV, onde basta o
+`expirationTtl`). A varredura é uma regra de bucket, configurada no painel:
+
+1. **R2 → `bec-relay-arquivos` → Settings**
+2. Em **Object lifecycle rules**, **Add rule**
+3. Nome: `expirar-logs-1-dia`
+4. Escopo: prefixo `log/` — é o prefixo que o worker usa para as chaves de arquivo
+5. Ação: **Delete uploaded objects** após **1 dia**
+6. Salvar
+
+Um dia é folga suficiente: o download normal acontece em minutos, e a extração
+mais demorada leva alguns minutos.
+
+Alternativa se algum dia isso precisar ser versionado em código: um **Cron
+Trigger** no Worker varrendo o bucket com `R2.list()` e apagando o que passou da
+idade. Note que aqui `list` é operação de R2 (1 M/mês no plano gratuito), não a do
+KV que estourou a cota — mas continua sendo mais peça móvel do que uma regra de
+bucket resolve.
 
 ## Limitação conhecida
 
