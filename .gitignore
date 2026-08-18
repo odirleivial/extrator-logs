@@ -14,6 +14,9 @@ output/
 # Configurações sensíveis — nunca versionar
 properties/secure.properties
 
+# Saídas de runtime do agente
+server_agent/historico_envio_logs.csv
+
 # Binários do agente
 server_agent/*.exe
 server_agent/nssm.exe

@@ -16,6 +16,11 @@ e-mail. É o fonte do Worker publicado em `bec-relay.<usuario>.workers.dev`.
 3. Conferir em **Settings → Variables**:
    - `TOKEN` = o mesmo token do `config.properties` (BEC) e do `agent.properties`
    - **KV Namespace Bindings**: variável `KV` → namespace `bec-relay`
+4. Para o **download de logs**, criar o bucket e ligá-lo:
+   - **R2 → Create bucket** → `bec-relay-arquivos`
+   - **Settings → Bindings → Add R2 bucket**: variável `R2` → `bec-relay-arquivos`
+   - sem esse binding, as rotas `/arquivo/*` respondem **503** com a mensagem
+     dizendo o que falta; o resto do relay continua funcionando
 
 Antes de subir:
 
@@ -49,6 +54,9 @@ necessário: o Worker fica atrás da proteção de bot do Cloudflare, que respon
 | POST | `/resultado/<pid>` | agente | Devolve o resultado e **remove aquele** pedido |
 | GET | `/resultado/<pid>` | BEC | Lê o resultado (consome na leitura) |
 | GET | `/fila/<loja>/<pdv>` | diagnóstico | Lista o que está na fila e o que está reservado |
+| PUT | `/arquivo/<pid>` | agente | Sobe o ZIP de logs para o R2 (corpo binário) |
+| GET | `/arquivo/<pid>` | BEC | Baixa o ZIP |
+| DELETE | `/arquivo/<pid>` | BEC | Apaga o ZIP depois de baixado |
 
 A fila é endereçada pelo par **loja/PDV do agente** (`bec_loja`/`bec_pdv` no BEC,
 `loja`/`pdv` no `agent.properties`) — os dois precisam ser iguais. O alvo de cada
@@ -99,6 +107,26 @@ adiciona ao poll ocioso?* A resposta precisa continuar sendo zero.
 Consumo com a configuração recomendada do agente (janela 07:00–20:00 em dias
 úteis, intervalo ocioso de 15 s): **~3.100 leituras/dia**, 3% da cota — cabem
 cerca de 30 agentes antes de encostar no limite.
+
+## Por que o ZIP de logs vai no R2 e não no KV
+
+| | KV | R2 |
+|---|---|---|
+| Teto por objeto | 25 MB | sem teto prático |
+| Formato | precisa de base64 (+33%) | binário puro |
+| Custo de CPU no Worker | serializa/parseia tudo | corpo passa direto |
+| Cota gratuita | 1.000 escritas/dia | 10 GB, 1 M escritas/mês |
+
+Pelo KV, um ZIP de 18,6 MB era o máximo — e as solicitações **históricas**
+compactam a pasta `debug_P2K` do dia inteiro, cujo tamanho é imprevisível. Pelo
+R2 esse teto sai do caminho e os 33% do base64 deixam de ser desperdiçados.
+
+O KV continua servindo para o que é pequeno: a fila e o aviso de que o arquivo
+está pronto (nome, tamanho, sha256).
+
+O BEC apaga o objeto assim que baixa, então o bucket não acumula. Vale configurar
+também uma **regra de lifecycle** no bucket (expirar em 1 dia) para varrer o que
+sobrar de um download que nunca aconteceu.
 
 ## Limitação conhecida
 

@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
 **Data:** 17 de Agosto de 2026  
-**Versão:** 2.44.1
+**Versão:** 2.45.0
 
 ---
 
@@ -51,7 +51,7 @@ de anexo) e o agente desfaz a renomeação ao aplicar a atualização.
 | Funcionalidade | Flag | Canal |
 |---|---|---|
 | PinPad | `pinpad_modo_comunicacao` | relay |
-| Solicitar Logs (lojas de PDV) | `logs_modo_comunicacao` | relay |
+| Solicitar Logs (lojas de PDV) | `logs_modo_comunicacao` | relay — resposta por e-mail **ou download via R2**, escolhido no botão |
 | Manutenção PDV (6 funcionalidades) | `pdv_modo_comunicacao` | relay |
 | Registro de Execução (trilha de auditoria) | `registro_modo_comunicacao` | relay |
 | Atualizar Agente — **só o Agent Extrator** | `atualizacao_modo_comunicacao` | relay (limite 18 MB) |
@@ -101,6 +101,36 @@ seguinte de 2 s. Consistência forte exigiria migrar a fila para Durable Objects
 ---
 
 ## 📋 Histórico de Versões
+
+### 2.45.0 — 18/08/2026
+- **Solicitar Logs ganhou o botão Download**, no mesmo padrão do Exportar Oracle: dois
+  botões, **Enviar por E-mail** (o fluxo de sempre, com o ZIP anexado) e **Download**
+  (o agente sobe o arquivo e o BEC o entrega ao navegador)
+- O arquivo trafega pelo **R2**, não pelo KV. O KV tem teto de 25 MB por objeto e exige
+  base64 (+33%); o R2 aceita binário puro, tem 10 GB no plano gratuito e não impõe esse
+  teto. Isso importa porque as solicitações **históricas** compactam a pasta `debug_P2K`
+  do dia inteiro, de tamanho imprevisível — era o caso que ficava sem margem
+- Fluxo do download: o BEC enfileira com `Entrega: download` → o agente extrai, sobe o
+  ZIP em `PUT /arquivo/<pid>` e publica no resultado o **nome, tamanho, sha256 e o resumo
+  de arquivos incluídos/faltando** → a tela consulta `/solicitar/status/<pid>` de 3 em 3
+  segundos → quando fica pronto, baixa por `/solicitar/baixar/<pid>`
+- O BEC **apaga o objeto no R2 depois de baixar**, então o bucket não acumula
+- O resultado do relay é consumido na leitura, então o BEC **memoriza** o status por PID:
+  o polling pode consultar quantas vezes precisar sem perder a informação
+- O resumo por arquivo, que no e-mail ia no HTML, aparece agora na própria tela
+  ("3 incluído(s), 1 não encontrado(s)")
+- O botão Download exige o modo Tunnel e **não existe para o `SERVERS_EP_SP`**, que não
+  alcança o relay — a tela recusa com mensagem explicando
+- Sem o campo `Entrega`, o agente mantém exatamente o comportamento histórico (e-mail),
+  então um agente que receba um pedido antigo não muda de conduta
+- Novo `scripts/testar_download_logs.py`: valida o ramo de entrega dentro do agente
+  **sem rede** (confere que o download sobe o arquivo e não manda e-mail, e que a
+  ausência de `Entrega` mantém o e-mail) e, com o worker publicado, o ciclo completo até
+  o arquivo chegar byte a byte igual
+- **Requer configuração nova na Cloudflare:** bucket `bec-relay-arquivos` e binding `R2`.
+  Sem o binding, as rotas `/arquivo/*` respondem 503 dizendo o que falta e o resto do
+  relay segue funcionando
+- Agente Extrator em v1.7.0
 
 ### 2.44.1 — 18/08/2026
 - **Corrige o estouro da cota do Cloudflare KV, que derrubou o relay.** O worker

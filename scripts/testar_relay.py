@@ -403,7 +403,7 @@ if item_reg:
     agente._reservar_pid(item_reg['pid'])
     agente._tratar_item_relay(
         'registro_execucao', item_reg, _config_teste(), '', '',
-        lambda ok, msg: respostas.append((ok, msg)),
+        lambda ok, msg, extra=None: respostas.append((ok, msg, extra)),
     )
     checar(len(respostas) == 1, 'handler respondeu ao relay uma vez', str(respostas))
     checar(respostas and respostas[0][0] is True, 'resposta de sucesso',
@@ -573,7 +573,7 @@ agente.processar_atualizacao = _espiao
 try:
     agente._reservar_pid(item_at['pid'])
     agente._tratar_item_relay('atualizacao_agente', item_at, _config_teste(), '', '',
-                              lambda ok, msg: eventos.append('ack'))
+                              lambda ok, msg, extra=None: eventos.append('ack'))
 finally:
     agente.processar_atualizacao = _orig
 

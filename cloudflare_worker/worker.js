@@ -7,6 +7,8 @@
  *   TOKEN = seu_token_secreto          (o mesmo do BEC e do agent.properties)
  * Settings → Variables → KV Namespace Bindings:
  *   Nome da variável: KV               Namespace: bec-relay
+ * Settings → Bindings → R2 Bucket (para o download de logs):
+ *   Nome da variável: R2               Bucket: bec-relay-arquivos
  *
  * ---------------------------------------------------------------------------
  * CUSTO NO KV — é o que dita o desenho deste arquivo.
@@ -35,6 +37,14 @@
  * O contrato HTTP é o mesmo das versões anteriores — mesmos caminhos, métodos e
  * formatos de resposta —, então BEC e agentes já instalados funcionam sem
  * atualização e a troca não precisa ser sincronizada.
+ *
+ * ARQUIVOS GRANDES VÃO PARA O R2, NÃO PARA O KV.
+ *
+ * O KV tem teto de 25 MB por valor, e um binário só cabe nele em base64 — que
+ * ocupa 1/3 a mais e ainda obriga o Worker a serializar/parsear a coisa toda. O
+ * R2 aceita o corpo binário como está, tem 10 GB no plano gratuito e não impõe
+ * esse teto. Por isso o ZIP de logs trafega por /arquivo/<pid>, e pelo KV passa
+ * apenas o aviso de que ele está pronto (nome, tamanho, sha256).
  *
  * Comportamento da fila:
  *  - vários pedidos podem esperar ao mesmo tempo, entregues na ordem de chegada
@@ -210,6 +220,43 @@ async function handleRequest(request) {
       expiraEm: Math.max(0, i.exp - t),
     }));
     return jsonResp({ total: itens.length, itens: itens });
+  }
+
+  // -------------------------------------------------------------------------
+  // Arquivos grandes (ZIP de logs) — R2
+  //
+  // O corpo trafega binário puro: nada de base64 e nada de JSON.parse, então o
+  // tamanho não é limitado pelos 25 MB do KV nem custa CPU do Worker.
+  // -------------------------------------------------------------------------
+  if (/^\/arquivo\/[^/]+$/.test(path)) {
+    if (typeof R2 === 'undefined') {
+      return jsonResp({ erro: 'Bucket R2 não configurado (Settings → Bindings → R2 Bucket, variável R2).' }, 503);
+    }
+    const chave = 'log/' + path.split('/')[2];
+
+    // PUT — o agente envia o arquivo pronto
+    if (request.method === 'PUT') {
+      await R2.put(chave, request.body);
+      return jsonResp({ ok: true });
+    }
+
+    // GET — o BEC baixa
+    if (request.method === 'GET') {
+      const obj = await R2.get(chave);
+      if (!obj) return jsonResp({ erro: 'Arquivo não encontrado ou já baixado' }, 404);
+      return new Response(obj.body, {
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(obj.size),
+        },
+      });
+    }
+
+    // DELETE — o BEC confirma o download e libera o espaço
+    if (request.method === 'DELETE') {
+      await R2.delete(chave);
+      return jsonResp({ ok: true });
+    }
   }
 
   return jsonResp({ erro: 'Rota não encontrada' }, 404);

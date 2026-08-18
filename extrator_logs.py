@@ -1195,7 +1195,14 @@ def enviar_ao_agente(remetente, senha, destinatario, assunto, corpo):
     _enfileirar_no_relay(props, tipo, pid, corpo)
 
 
-def _solicitar_logs_via_relay(props, pid, loja, pdv, logs, email_destino, data_logs, corpo):
+# Resultado das solicitacoes de log em modo download, por PID. A leitura do
+# resultado no relay e destrutiva (consome), entao guardar aqui permite a tela
+# consultar o status varias vezes sem perder a informacao. Some quando o arquivo
+# e baixado; o processo do BEC e de vida curta, nao precisa de expiracao.
+_RESULTADOS_LOG = {}
+
+
+def _solicitar_logs_via_relay(props, pid, loja, pdv, logs, email_destino, data_logs, corpo, entrega='email'):
     """Enfileira a solicitação de logs no relay, em vez de enviar e-mail.
 
     Só o pedido deixa de usar e-mail: o agente responde com o zip dos logs por
@@ -1211,6 +1218,7 @@ def _solicitar_logs_via_relay(props, pid, loja, pdv, logs, email_destino, data_l
         'pdv':     pdv,
         'logs':    ', '.join(logs),
         'data':    data_logs,
+        'entrega': entrega,
     }
 
     try:
@@ -1219,11 +1227,89 @@ def _solicitar_logs_via_relay(props, pid, loja, pdv, logs, email_destino, data_l
         logger.error(f"[Relay] Falha ao enfileirar solicitação de logs: {e}")
         return jsonify({'sucesso': False, 'mensagem': f'Erro ao enviar a solicitação: {e}'}), 500
 
-    return jsonify({
-        'sucesso': True,
-        'mensagem': f'Solicitação enviada pelo relay! PID: {pid}. Os logs chegarão por e-mail em {email_destino}.',
-        'pid': pid,
-    })
+    if entrega == 'download':
+        mensagem = (f'Solicitação enviada! PID: {pid}. Extraindo os logs — o download '
+                    f'começa automaticamente quando o agente terminar.')
+    else:
+        mensagem = (f'Solicitação enviada pelo relay! PID: {pid}. '
+                    f'Os logs chegarão por e-mail em {email_destino}.')
+    return jsonify({'sucesso': True, 'mensagem': mensagem, 'pid': pid, 'entrega': entrega})
+
+
+@app.route('/solicitar/status/<pid>')
+def solicitar_status(pid):
+    """Diz se o agente já terminou a extração deste PID.
+
+    A tela chama isso em intervalos até o arquivo ficar pronto. A leitura do
+    resultado no relay é destrutiva, então o resultado é guardado aqui em memória
+    — assim o polling pode consultar quantas vezes precisar sem perdê-lo.
+    """
+    pid = os.path.basename(pid)
+    if pid in _RESULTADOS_LOG:
+        return jsonify(_RESULTADOS_LOG[pid])
+
+    props      = ler_config_completo()
+    worker_url = props.get('bec_tunnel_url', '').rstrip('/')
+    token      = props.get('pinpad_tunnel_token', '')
+    if not worker_url:
+        return jsonify({'pronto': False, 'erro': 'URL do relay não configurada'}), 400
+
+    status, corpo = _worker_call('GET', f'{worker_url}/resultado/{pid}', token=token)
+    if status == 204:
+        return jsonify({'pronto': False})       # agente ainda trabalhando
+    if status != 200:
+        return jsonify({'pronto': False, 'erro': f'relay respondeu HTTP {status}'})
+
+    try:
+        dados = json.loads(corpo or b'{}')
+    except Exception:
+        return jsonify({'pronto': False, 'erro': 'resultado ilegível no relay'})
+
+    resultado = {
+        'pronto':   True,
+        'sucesso':  bool(dados.get('sucesso')),
+        'mensagem': dados.get('mensagem', ''),
+        'arquivo':  dados.get('arquivo', ''),
+        'tamanho':  dados.get('tamanho', 0),
+        'sha256':   dados.get('sha256', ''),
+        'incluidos': dados.get('incluidos'),
+        'faltando':  dados.get('faltando'),
+    }
+    _RESULTADOS_LOG[pid] = resultado
+    logger.info(f"[Relay] Resultado da solicitação {pid}: sucesso={resultado['sucesso']} "
+                f"arquivo={resultado['arquivo']} ({resultado['tamanho']} bytes)")
+    return jsonify(resultado)
+
+
+@app.route('/solicitar/baixar/<pid>')
+def solicitar_baixar(pid):
+    """Baixa do relay o ZIP que o agente subiu e entrega ao navegador."""
+    pid = os.path.basename(pid)
+    props      = ler_config_completo()
+    worker_url = props.get('bec_tunnel_url', '').rstrip('/')
+    token      = props.get('pinpad_tunnel_token', '')
+
+    info = _RESULTADOS_LOG.get(pid, {})
+    nome = os.path.basename(info.get('arquivo') or f'LOG-{pid}.zip')
+
+    status, conteudo = _worker_call('GET', f'{worker_url}/arquivo/{pid}', token=token)
+    if status != 200 or not conteudo:
+        logger.error(f"[Relay] Download do arquivo {pid} falhou: HTTP {status}")
+        return jsonify({'sucesso': False,
+                        'mensagem': f'Arquivo não disponível no relay (HTTP {status}). '
+                                    f'Ele expira depois de baixado ou por tempo.'}), 404
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    caminho = os.path.join(OUTPUT_DIR, nome)
+    with open(caminho, 'wb') as f:
+        f.write(conteudo)
+    logger.info(f"[Relay] Arquivo de logs baixado: {nome} ({len(conteudo)} bytes)")
+
+    # Libera o espaço no bucket: o arquivo já está no disco de quem pediu.
+    _worker_call('DELETE', f'{worker_url}/arquivo/{pid}', token=token)
+    _RESULTADOS_LOG.pop(pid, None)
+
+    return send_file(caminho, as_attachment=True, download_name=nome)
 
 
 @app.route('/solicitar', methods=['POST'])
@@ -1245,7 +1331,15 @@ def solicitar():
         return jsonify({'sucesso': False, 'mensagem': 'A data dos logs não pode ser futura.'}), 400
     data_logs = data_obj.strftime('%d/%m/%Y')
 
-    logger.info(f"Solicitação de logs [loja={loja} pdv={pdv} email={email_destino} data={data_logs} logs={','.join(logs)}]")
+    # 'email' (padrão, histórico) ou 'download' (o agente sobe o ZIP para o R2 e o
+    # BEC o baixa pelo relay). O download só existe no canal relay: sem ele o
+    # agente não tem para onde subir o arquivo.
+    entrega = (request.form.get('entrega') or 'email').strip().lower()
+    if entrega not in ('email', 'download'):
+        entrega = 'email'
+
+    logger.info(f"Solicitação de logs [loja={loja} pdv={pdv} email={email_destino} "
+                f"data={data_logs} logs={','.join(logs)} entrega={entrega}]")
 
     pid = gerar_pid()
 
@@ -1259,13 +1353,24 @@ def solicitar():
     else:
         assunto = f"[Solicitação Log] - [{pid}]"
         corpo = f"PID: {pid}\nUsuario: {USUARIO_WINDOWS}\nDestino: {email_destino}\nLoja: {loja}\nPDV: {pdv}\nLogs: {', '.join(logs)}\nData: {data_logs}"
+        if entrega == 'download':
+            # O agente sobe o ZIP para o R2 em vez de enviar e-mail
+            corpo += "\nEntrega: download"
 
     # Canal de envio. O relay atende apenas o Agente Extrator (lojas de PDV): o
     # Server Agent SP não alcança o relay da rede dele, e o linx-webservices segue
     # o fluxo de e-mail de sempre. O corpo é o mesmo nos dois canais.
     atendido_pelo_extrator = loja not in ('SERVERS_EP_SP', 'server_152')
-    if atendido_pelo_extrator and props.get('logs_modo_comunicacao', 'email').strip().lower() == 'tunnel':
-        return _solicitar_logs_via_relay(props, pid, loja, pdv, logs, email_destino, data_logs, corpo)
+    via_relay = atendido_pelo_extrator and props.get('logs_modo_comunicacao', 'email').strip().lower() == 'tunnel'
+
+    if entrega == 'download' and not via_relay:
+        return jsonify({'sucesso': False, 'mensagem':
+                        'O download exige o modo Tunnel em Configurações → Modo de comunicação, '
+                        'e não está disponível para o Server Agent SP.'}), 400
+
+    if via_relay:
+        return _solicitar_logs_via_relay(props, pid, loja, pdv, logs, email_destino,
+                                         data_logs, corpo, entrega)
 
     try:
         remetente = props.get('email_envio', '')

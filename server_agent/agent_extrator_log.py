@@ -506,6 +506,44 @@ def _parsear_data_solicitacao(texto):
 # ---------------------------------------------------------------------------
 # Funcionalidade 1: Solicitação de Logs
 # ---------------------------------------------------------------------------
+def _subir_arquivo_para_r2(props, pid, caminho):
+    """Envia o arquivo pronto para o R2, pelo relay. Devolve (ok, mensagem).
+
+    O corpo vai binario puro, sem base64: o R2 nao tem o teto de 25 MB do KV e
+    nao obriga o Worker a parsear o conteudo.
+    """
+    url   = props.get('bec_tunnel_url', '').rstrip('/')
+    token = props.get('pinpad_tunnel_token', '')
+    if not url:
+        return False, 'bec_tunnel_url nao configurado — sem relay nao ha como subir o arquivo.'
+
+    tamanho = os.path.getsize(caminho)
+    with open(caminho, 'rb') as f:
+        dados = f.read()
+
+    req = _urllib_req.Request(
+        f'{url}/arquivo/{pid}', data=dados, method='PUT',
+        headers={
+            'X-Token': token,
+            'User-Agent': 'AgentExtratarLog/1.0',
+            'Content-Type': 'application/octet-stream',
+        },
+    )
+    try:
+        with _urllib_req.urlopen(req, timeout=300) as resp:
+            if resp.status in (200, 201):
+                log(f'[R2] Arquivo enviado ({tamanho} bytes) para /arquivo/{pid}')
+                return True, ''
+            return False, f'relay respondeu HTTP {resp.status} no upload'
+    except _urllib_err.HTTPError as e:
+        corpo_erro = ''
+        try: corpo_erro = e.read()[:200].decode(errors='replace')
+        except Exception: pass
+        return False, f'HTTP {e.code} no upload para o relay: {corpo_erro}'
+    except Exception as e:
+        return False, f'falha ao subir o arquivo para o relay: {e}'
+
+
 def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
     """Extrai os logs pedidos e devolve o zip por e-mail.
 
@@ -520,6 +558,9 @@ def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
     pdv      = extrair_campo(corpo, 'PDV')
     logs     = extrair_campo(corpo, 'Logs')
     data_txt = extrair_campo(corpo, 'Data')
+    # Como o solicitante recebe o resultado: 'email' (padrao, historico) ou
+    # 'download', em que o ZIP sobe para o R2 e o BEC o baixa pelo relay.
+    entrega  = (extrair_campo(corpo, 'Entrega') or 'email').strip().lower()
 
     # Data de referência: quando anterior à data atual, os logs vêm dos arquivos
     # históricos (configuração historico.<log>.*); caso contrário, do dia corrente.
@@ -544,6 +585,7 @@ def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
     nome_zip_path = os.path.join(BASE_DIR, nome_zip)
     status_envio  = 'Sucesso'
     erro_msg      = ''
+    retorno_extra = None   # metadados do arquivo, quando a entrega e por download
 
     # Rastreia status de cada arquivo: {'nome': str, 'caminho': str, 'status': 'ok'|'nao_encontrado'|'sem_config'}
     arquivos_status = []
@@ -759,18 +801,42 @@ def processar_solicitacao_log(imap, num, corpo, props, email_user, email_pass):
             + linhas_txt
         )
 
-        enviar_email_com_anexo(email_user, email_pass, destino,
-                               f'[Logs][{loja}][{pdv}][{pid}]',
-                               corpo_txt, nome_zip_path, corpo_html)
-        log(f'Email enviado para {destino} | Arquivo: {nome_zip}')
-        _marcar_lido(imap, num)
+        if entrega == 'download':
+            # O ZIP sobe para o R2 e o BEC o baixa; nao ha e-mail neste caminho.
+            # O resumo por arquivo, que no e-mail ia no HTML, volta no resultado
+            # para a tela do BEC mostrar.
+            ok_upload, erro_upload = _subir_arquivo_para_r2(props, pid, nome_zip_path)
+            if not ok_upload:
+                raise RuntimeError(f'Falha ao disponibilizar o arquivo para download: {erro_upload}')
+            log(f'Arquivo disponibilizado para download | Arquivo: {nome_zip}')
+            _marcar_lido(imap, num)
+            retorno_extra = {
+                'arquivo':  nome_zip,
+                'tamanho':  os.path.getsize(nome_zip_path),
+                'sha256':   _sha256_arquivo(nome_zip_path),
+                'incluidos': n_ok,
+                'faltando':  n_erro,
+                'versao_pdv': versao,
+            }
+        else:
+            enviar_email_com_anexo(email_user, email_pass, destino,
+                                   f'[Logs][{loja}][{pdv}][{pid}]',
+                                   corpo_txt, nome_zip_path, corpo_html)
+            log(f'Email enviado para {destino} | Arquivo: {nome_zip}')
+            _marcar_lido(imap, num)
 
     except Exception as e:
         status_envio = 'Erro'
         erro_msg = str(e)
         log(f'Erro ao processar log PID={pid}: {erro_msg}', 'error')
 
-    gravar_csv_log([pid, destino, loja, pdv, logs, nome_zip, datetime.now().isoformat(), status_envio, erro_msg])
+    gravar_csv_log([pid, destino if entrega != 'download' else 'download',
+                    loja, pdv, logs, nome_zip,
+                    datetime.now().isoformat(), status_envio, erro_msg])
+
+    # No modo download, o BEC precisa do nome e do tamanho para buscar o arquivo.
+    # O despachante do relay repassa isso no POST /resultado.
+    return retorno_extra
 
 # ---------------------------------------------------------------------------
 # Funcionalidade 2: Parametrização PDV
@@ -3015,26 +3081,28 @@ def _tratar_item_relay(tipo, dados, props, email_user, email_pass, responder):
             responder(True, f'{rotulo} recebida; o resultado virá por e-mail.')
 
         def _executar():
+            # O retorno do handler, quando existe, sao metadados que o BEC precisa
+            # (hoje: nome/tamanho/sha256 do ZIP quando a entrega e por download).
             if assinatura == 'completo':
-                handler(None, None, corpo, props, email_user, email_pass)
-            elif assinatura == 'props':
-                handler(None, None, corpo, props)
-            elif assinatura == 'atualizacao':
+                return handler(None, None, corpo, props, email_user, email_pass)
+            if assinatura == 'props':
+                return handler(None, None, corpo, props)
+            if assinatura == 'atualizacao':
                 dados_zip = _base64.b64decode(dados.get('arquivo', ''))
-                handler(None, None, None, corpo, props, email_user, dados_zip)
-            else:
-                handler(None, None, corpo)
+                return handler(None, None, None, corpo, props, email_user, dados_zip)
+            return handler(None, None, corpo)
 
         if serializa:
             # Serializa entre si tudo que mexe em PDV por SMB/rede: duas execuções
             # simultâneas competiriam pela mesma rede e pelo mesmo disco.
             with _lock_extracao_relay:
-                _executar()
+                extra = _executar()
         else:
-            _executar()
+            extra = _executar()
 
         if not ack_antes:
-            responder(True, f'{rotulo} executada pelo agente')
+            responder(True, f'{rotulo} executada pelo agente',
+                      extra if isinstance(extra, dict) else None)
     except Exception as ex:
         log(f'[Relay] Erro ao tratar {rotulo} PID={pid}: {ex}', 'error')
         if not ack_antes:
@@ -3201,12 +3269,15 @@ def _tunnel_loop(props):
                 # não quebrar o que já estava em uso.
                 tipo  = (dados.get('tipo') or 'pinpad').strip().lower()
 
-                def _responder(sucesso, mensagem, _pid=pid):
+                def _responder(sucesso, mensagem, extra=None, _pid=pid):
                     # É este POST que apaga o item pendente no relay. Se ele
                     # falhar, o pedido fica na fila e voltaria em todo poll, por
                     # isso vale insistir algumas vezes antes de desistir.
+                    corpo_res = {'sucesso': sucesso, 'mensagem': mensagem}
+                    if extra:
+                        corpo_res.update(extra)
                     for tentativa in range(1, 4):
-                        status_post = _post(f'/resultado/{_pid}', {'sucesso': sucesso, 'mensagem': mensagem})
+                        status_post = _post(f'/resultado/{_pid}', corpo_res)
                         if status_post in (200, 201):
                             log(f'[Worker] Resultado enviado — HTTP {status_post}')
                             return

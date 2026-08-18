@@ -152,28 +152,91 @@
                     return;
                 }
 
-                var form = e.target;
-                var formData = new FormData(form);
+                enviarSolicitacao(e.target, _entregaEscolhida);
+            });
+        });
 
-                fetch(form.action, {
-                    method: 'POST',
-                    body: formData
-                }).then(response => response.json())
+        // Qual botão foi clicado: 'email' mantém o fluxo de sempre (o agente
+        // responde com o ZIP anexado), 'download' faz o agente subir o arquivo
+        // para o relay e o BEC baixá-lo aqui.
+        var _entregaEscolhida = 'email';
+
+        function solicitarPorEmail() {
+            _entregaEscolhida = 'email';
+            document.getElementById('painel').requestSubmit();
+        }
+
+        function solicitarDownload() {
+            _entregaEscolhida = 'download';
+            document.getElementById('painel').requestSubmit();
+        }
+
+        function limparFormulario(form) {
+            form.reset();
+            atualizaLogs();
+            populaPdvs();
+            atualizaVisibilidadePdv();
+            preencherDataAtual();
+        }
+
+        function enviarSolicitacao(form, entrega) {
+            var formData = new FormData(form);
+            formData.set('entrega', entrega);
+
+            fetch(form.action, { method: 'POST', body: formData })
+                .then(response => response.json())
                 .then(data => {
-                    if (data.sucesso) {
-                        mostrarAlerta(data.mensagem, "sucesso");
-                        form.reset();
-                        atualizaLogs();
-                        populaPdvs();
-                        atualizaVisibilidadePdv();
-                        preencherDataAtual();
-                    } else {
+                    if (!data.sucesso) {
                         mostrarAlerta("Erro: " + data.mensagem, "erro");
+                        return;
+                    }
+                    mostrarAlerta(data.mensagem, "sucesso");
+                    limparFormulario(form);
+                    if (entrega === 'download' && data.pid) {
+                        aguardarArquivo(data.pid);
                     }
                 })
                 .catch(err => mostrarAlerta("Erro na solicitação: " + err, "erro"));
-            });
-        });
+        }
+
+        // A extração leva minutos (cópia por SMB + zip), então a tela pergunta ao
+        // BEC de tempo em tempo se o agente já terminou.
+        function aguardarArquivo(pid) {
+            var INTERVALO = 3000;
+            var LIMITE_MIN = 12;                       // desiste depois disso
+            var fim = Date.now() + LIMITE_MIN * 60000;
+
+            (function verificar() {
+                if (Date.now() > fim) {
+                    mostrarAlerta("O agente não respondeu em " + LIMITE_MIN + " minutos (PID " + pid +
+                                  "). Verifique o log do agente.", "erro");
+                    return;
+                }
+                fetch('/solicitar/status/' + encodeURIComponent(pid))
+                    .then(r => r.json())
+                    .then(st => {
+                        if (!st.pronto) {
+                            mostrarAlerta("Extraindo os logs no agente... (PID " + pid + ")", "sucesso");
+                            setTimeout(verificar, INTERVALO);
+                            return;
+                        }
+                        if (!st.sucesso) {
+                            mostrarAlerta("O agente não conseguiu gerar os logs: " + (st.mensagem || ''), "erro");
+                            return;
+                        }
+                        var kb = st.tamanho ? " (" + Math.round(st.tamanho / 1024) + " KB)" : "";
+                        var resumo = (st.incluidos !== null && st.incluidos !== undefined)
+                            ? " — " + st.incluidos + " incluído(s), " + st.faltando + " não encontrado(s)"
+                            : "";
+                        mostrarAlerta("Arquivo pronto" + kb + resumo + ". Baixando...", "sucesso");
+                        // Navegar para a rota de download dispara o "salvar como"
+                        window.location = '/solicitar/baixar/' + encodeURIComponent(pid);
+                    })
+                    .catch(err => {
+                        mostrarAlerta("Erro ao consultar o status: " + err, "erro");
+                    });
+            })();
+        }
     </script>
 </head>
 <body>
@@ -207,7 +270,8 @@
             {% endfor %}
         </select>
 
-        <button type="submit">Solicitar Logs</button>
+        <button type="button" onclick="solicitarPorEmail()">Enviar por E-mail</button>
+        <button type="button" onclick="solicitarDownload()">Download</button>
         <button type="button" onclick="limparCampos()">Limpa</button>
     </form>
 </body>
