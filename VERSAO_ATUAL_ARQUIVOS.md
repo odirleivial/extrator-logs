@@ -1,7 +1,7 @@
 # Documentação da Versão Atual - Backoffice Equipe QA
 
 **Data:** 17 de Agosto de 2026  
-**Versão:** 2.44.0
+**Versão:** 2.44.1
 
 ---
 
@@ -83,6 +83,7 @@ foi recuperado do painel da Cloudflare e versionado:
 | **Ack apagava o item errado** | `POST /resultado/<pid>` limpava a chave do comando qualquer que fosse o item ali | o PID aponta para a chave exata; só aquele item é removido |
 | **Item lento travava a fila** | o `GET /pendente` devolvia sempre o mesmo item até ele ser respondido | reserva de entrega (10 min): o próximo poll passa ao item seguinte |
 | **Tudo expirava em 2 min** | agente offline por mais de 2 min perdia o pedido; o BEC tinha 2 min para ler um resultado | 15 min para comandos e resultados; PinPad segue em 2 min, porque comando velho de PinPad não serve |
+| **Cota do KV estourada** | `KV.list()` a cada poll: ~43.200/dia contra 1.000 do plano gratuito | fila indexada em uma chave; poll ocioso custa 1 leitura e nenhuma listagem |
 | **Relay aberto sem TOKEN** | `if (token && ...)` — sem a variável, servia a internet inteira | sem `TOKEN` configurado recusa tudo com 503 |
 
 O contrato HTTP não mudou, então BEC e agentes já instalados funcionam com as duas
@@ -100,6 +101,36 @@ seguinte de 2 s. Consistência forte exigiria migrar a fila para Durable Objects
 ---
 
 ## 📋 Histórico de Versões
+
+### 2.44.1 — 18/08/2026
+- **Corrige o estouro da cota do Cloudflare KV, que derrubou o relay.** O worker
+  publicado na 2.44.0 chamava `KV.list()` a cada `GET /pendente`. Com o agente
+  buscando a cada 2s são ~43.200 listagens por dia contra as **1.000** do plano
+  gratuito: a cota estourava em cerca de uma hora e `/pendente` e `/fila` passavam a
+  responder **erro 1101** (o `/status` seguia de pé, porque não toca no KV)
+- **A fila deixou de ser varrida e passou a ser indexada.** Uma chave por agente
+  (`fila:<loja>:<pdv>`) guarda a lista de pendências, então o poll ocioso — a
+  esmagadora maioria — custa **uma leitura e nenhuma escrita**. Não existe mais
+  nenhum `KV.list()` no worker, nem no endpoint de diagnóstico
+- A reserva de entrega passou para dentro da entrada do índice, então entregar um
+  item não gasta escrita extra. O corpo de cada pedido continua em chave própria: o
+  pacote de atualização não é reserializado a cada mexida na fila
+- **Janela de atendimento no agente** (`polling_janela`, `polling_dias`): fora dela o
+  agente **não chama o relay**, que é o que de fato reduz o consumo. Aceita janela
+  cruzando a meia-noite (`22:00-06:00`) e cai para 24h se a configuração for inválida
+- **Intervalo adaptativo** (`polling_intervalo_seg`, `polling_intervalo_ocioso_seg`,
+  `polling_ocioso_apos_seg`): 2s logo após receber trabalho, para quem está testando
+  não sentir diferença, e 15s quando não há movimento
+- Efeito somado, com janela 07:00–20:00 em dias úteis: de **43.200 listagens/dia
+  (estourando a cota)** para **~3.100 leituras/dia, 3% da cota** — cabem cerca de 30
+  agentes nesse ritmo. Só o intervalo ocioso, sem janela, já leva a 5.760/dia
+- Como o `agent.properties` é preservado na atualização, um agente que já está em
+  campo sobe sem as chaves novas e usa os **padrões do código**: 24h de janela e 15s
+  de intervalo ocioso, que sozinhos já cortam o consumo em 7,5x. A janela de horário
+  exige editar o `agent.properties` da máquina
+- `scripts/conferir_worker.py` passa a cobrar que não exista `KV.list()` e que o
+  caminho ocioso saia com uma leitura, sem escrita
+- Agente Extrator em v1.6.0
 
 ### 2.44.0 — 17/08/2026
 - **Atualização do agente pelo relay.** Nova flag **Atualizar Agente**

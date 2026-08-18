@@ -3047,6 +3047,57 @@ def _tratar_item_relay(tipo, dados, props, email_user, email_pass, responder):
         limpar_contexto()
 
 
+def _parsear_janela(texto):
+    """'08:00-20:00' -> (480, 1200) em minutos desde a meia-noite. Vazio = 24h."""
+    texto = (texto or '').strip()
+    if not texto:
+        return None
+    try:
+        ini, fim = texto.split('-', 1)
+        hi, mi = [int(x) for x in ini.strip().split(':')]
+        hf, mf = [int(x) for x in fim.strip().split(':')]
+        return hi * 60 + mi, hf * 60 + mf
+    except Exception:
+        log(f'[Tunnel] polling_janela invalida: "{texto}". Ignorando (24h).', 'warning')
+        return None
+
+
+_DIAS = {'seg': 0, 'ter': 1, 'qua': 2, 'qui': 3, 'sex': 4, 'sab': 5, 'dom': 6}
+
+
+def _parsear_dias(texto):
+    """'seg-sex' ou 'seg,qua,sex' -> set de weekday(). Vazio/'todos' = todos."""
+    texto = (texto or '').strip().lower()
+    if not texto or texto == 'todos':
+        return None
+    try:
+        if '-' in texto:
+            ini, fim = [d.strip() for d in texto.split('-', 1)]
+            a, b = _DIAS[ini], _DIAS[fim]
+            return set(range(a, b + 1)) if a <= b else set(range(a, 7)) | set(range(0, b + 1))
+        return {_DIAS[d.strip()] for d in texto.split(',') if d.strip()}
+    except Exception:
+        log(f'[Tunnel] polling_dias invalido: "{texto}". Ignorando (todos os dias).', 'warning')
+        return None
+
+
+def _dentro_da_janela(janela, dias, quando=None):
+    """True quando o agente deve buscar trabalho no relay agora.
+
+    Fora da janela o agente nao chama o relay — e o que de fato reduz o consumo
+    de KV, porque cada busca custa uma leitura da cota diaria.
+    """
+    quando = quando or datetime.now()
+    if dias is not None and quando.weekday() not in dias:
+        return False
+    if janela is None:
+        return True
+    minutos = quando.hour * 60 + quando.minute
+    ini, fim = janela
+    # Janela que cruza a meia-noite (ex.: 22:00-06:00)
+    return (ini <= minutos < fim) if ini <= fim else (minutos >= ini or minutos < fim)
+
+
 def _tunnel_loop(props):
     """Thread de polling HTTP do relay. Executa indefinidamente.
 
@@ -3064,11 +3115,25 @@ def _tunnel_loop(props):
     email_user = props.get('email', '')
     email_pass = props.get('senha', '')
 
+    # Cada busca no relay custa uma leitura da cota diaria do KV (100.000/dia no
+    # plano gratuito). Buscando a cada 2s sao ~43.200 por dia, so deste agente —
+    # 43% da cota parada, sem ninguem usando o BEC. Janela de horario e intervalo
+    # ocioso existem para cortar isso.
+    janela   = _parsear_janela(props.get('polling_janela', ''))
+    dias     = _parsear_dias(props.get('polling_dias', ''))
+    intervalo_ativo  = max(1, int(props.get('polling_intervalo_seg', 2) or 2))
+    intervalo_ocioso = max(1, int(props.get('polling_intervalo_ocioso_seg', 15) or 15))
+    ocioso_apos      = max(0, int(props.get('polling_ocioso_apos_seg', 120) or 120))
+
     if not loja or not pdv or not url:
         log('[Tunnel] loja, pdv ou bec_tunnel_url não configurados — polling desativado.', 'warning')
         return
 
+    desc_janela = props.get('polling_janela', '').strip() or '24h'
+    desc_dias   = props.get('polling_dias', '').strip() or 'todos os dias'
     log(f'[Tunnel] Iniciando polling para loja={loja} pdv={pdv} em {url}')
+    log(f'[Tunnel] Janela: {desc_janela} ({desc_dias}) | intervalo {intervalo_ativo}s ativo, '
+        f'{intervalo_ocioso}s ocioso apos {ocioso_apos}s sem trabalho')
 
     _HEADERS_BASE = {
         'X-Token': token,
@@ -3105,14 +3170,31 @@ def _tunnel_loop(props):
             log(f'[Tunnel] Erro de conexão em POST {endpoint}: {e}', 'warning')
             return 0
 
-    _poll_count = 0
+    _poll_count   = 0
+    _ultimo_item  = 0.0    # quando chegou o ultimo trabalho
+    _fora_avisado = False
+
     while True:
+        # Fora da janela nao chega nem a chamar o relay: e assim que o consumo
+        # de KV cai de verdade. Reavalia a cada minuto para entrar na hora certa.
+        if not _dentro_da_janela(janela, dias):
+            if not _fora_avisado:
+                log(f'[Tunnel] Fora da janela de atendimento ({desc_janela}, {desc_dias}) — '
+                    f'polling suspenso.')
+                _fora_avisado = True
+            time.sleep(60)
+            continue
+        if _fora_avisado:
+            log('[Tunnel] Dentro da janela de atendimento — polling retomado.')
+            _fora_avisado = False
+
         try:
             status, body = _get(f'/pendente/{loja}/{pdv}')
             _poll_count += 1
             if _poll_count % 30 == 0:
                 log(f'[Worker] Polling ativo — {_poll_count} ciclos | último status HTTP: {status}')
             if status == 200 and body:
+                _ultimo_item = time.time()
                 dados = _json.loads(body)
                 pid   = dados.get('pid', '')
                 # Itens antigos não têm `tipo`; a ausência significa PinPad, para
@@ -3173,7 +3255,11 @@ def _tunnel_loop(props):
                         limpar_contexto()
         except Exception as ex:
             log(f'[Worker] Exceção no loop: {ex}', 'error')
-        time.sleep(2)
+
+        # Rapido logo depois de um trabalho (quem esta testando espera resposta),
+        # devagar quando ninguem usa — que e a maior parte do dia.
+        recente = (time.time() - _ultimo_item) < ocioso_apos
+        time.sleep(intervalo_ativo if recente else intervalo_ocioso)
 
 
 def main():

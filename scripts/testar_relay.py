@@ -90,6 +90,29 @@ def drenar():
               {'sucesso': True, 'mensagem': 'drenagem de teste'})
 
 
+# O relay precisa estar de pe: se a cota diaria do KV estourou, ou o worker no ar
+# e uma versao quebrada, /pendente responde 500 e TODOS os testes abaixo falhariam
+# em cascata — mascarando a causa real com dezenas de falhas sem sentido.
+_st, _ = relay('GET', '/status')
+if _st != 200:
+    print(f'ABORTANDO: GET /status respondeu HTTP {_st}. O relay nao esta acessivel.')
+    sys.exit(2)
+_st, _ = relay('GET', f'/pendente/{LOJA_FICTICIA}/{PDV_FICTICIO}')
+if _st not in (200, 204):
+    print('=' * 70)
+    print(f'ABORTANDO: GET /pendente respondeu HTTP {_st}, mas /status esta OK.')
+    print()
+    print('O relay responde, mas a rota da fila falha. Causa mais provavel:')
+    print('  - cota diaria do Cloudflare KV estourada (erro 1101 no Worker), ou')
+    print('  - o worker publicado e uma versao com defeito.')
+    print()
+    print('Confira em: Cloudflare Dashboard -> Workers & Pages -> bec-relay -> Logs')
+    print('e o consumo em: Workers KV usage dashboard.')
+    print()
+    print('Este teste so faz sentido com a fila funcionando — nada foi executado.')
+    print('=' * 70)
+    sys.exit(2)
+
 print('=' * 70)
 print('1. FILA LIMPA ANTES DE COMECAR')
 print('=' * 70)

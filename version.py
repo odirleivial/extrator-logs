@@ -2,4 +2,4 @@
 # MAJOR: mudança de interface, arquitetura ou quebra de compatibilidade
 # MINOR: nova funcionalidade mantendo compatibilidade
 # PATCH: correção de bug ou ajuste sem nova funcionalidade
-__version__ = "2.44.0"
+__version__ = "2.44.1"

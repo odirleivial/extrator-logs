@@ -1,7 +1,7 @@
 /**
  * BEC Relay Worker — Cloudflare Workers (formato Service Worker, compatível com upload direto)
  *
- * Deploy: Cloudflare Dashboard → Workers → bec-relay → Edit code → colar este arquivo → Deploy
+ * Deploy: Cloudflare Dashboard → Workers & Pages → bec-relay → Edit code → colar → Deploy
  *
  * Settings → Variables:
  *   TOKEN = seu_token_secreto          (o mesmo do BEC e do agent.properties)
@@ -9,52 +9,39 @@
  *   Nome da variável: KV               Namespace: bec-relay
  *
  * ---------------------------------------------------------------------------
- * O contrato HTTP é o mesmo da versão anterior — mesmos caminhos, métodos e
- * formatos de resposta. BEC e agentes já instalados continuam funcionando sem
- * atualização, então esta troca não precisa ser sincronizada com ninguém.
+ * CUSTO NO KV — é o que dita o desenho deste arquivo.
  *
- * O que mudou em relação à versão anterior:
+ * O agente busca trabalho de poucos em poucos segundos, o dia inteiro. Essa rota
+ * é executada dezenas de milhares de vezes por dia, então cada operação de KV
+ * que ela fizer é multiplicada por isso. Os limites diários do plano gratuito
+ * são: 100.000 leituras, 1.000 escritas, 1.000 remoções e 1.000 listagens.
  *
- *  1. FILA DE VERDADE, em vez de um item por loja/PDV.
- *     Antes: `KV.put('cmd:<loja>:<pdv>')` guardava UM item; um segundo POST
- *     sobrescrevia o primeiro, sem erro. Dois pedidos seguidos ao mesmo agente,
- *     ou um pedido novo durante uma extração de logs, perdiam um deles.
- *     Agora cada item tem chave própria (`cmd:<loja>:<pdv>:<ts>:<rnd>`) e o
- *     `GET /pendente` escolhe o mais antigo. Uma chave por item também evita
- *     ler-modificar-gravar, que no KV não é atômico e perderia itens de novo.
+ * Uma versão anterior deste worker usava KV.list() a cada GET /pendente. Com o
+ * agente buscando a cada 2s são ~43.200 chamadas por dia, contra as 1.000
+ * permitidas — a cota estourava em cerca de uma hora e o relay passava a
+ * responder erro 1101.
  *
- *  2. ACK CASADO POR PID.
- *     Antes o `POST /resultado/<pid>` apagava a chave do comando qualquer que
- *     fosse o item ali — o ack de um pedido apagava outro que tivesse chegado
- *     no meio. Agora o PID aponta para a chave exata do item, e só ela é
- *     removida.
+ * Por isso aqui NÃO EXISTE KV.list() em lugar nenhum. A fila de cada agente é um
+ * índice em uma única chave, e o poll ocioso — que é a esmagadora maioria — custa
+ * exatamente UMA leitura:
  *
- *  3. ENTREGA COM RESERVA (lease), para o item lento não travar a fila.
- *     Um item entregue fica reservado por LEASE_TTL; enquanto isso o `GET
- *     /pendente` passa para o próximo. Sem isso, uma extração de logs de vários
- *     minutos seguraria o PinPad atrás dela. Se o agente morrer no meio, a
- *     reserva expira e o item volta a ser entregue — o agente já ignora item
- *     repetido pelo PID que mantém em memória.
+ *   fila:<loja>:<pdv>   → [ {k, pid, tipo, exp, lease}, ... ]
  *
- *  4. VALIDADE MAIOR E POR TIPO.
- *     Antes tudo expirava em 120s: agente offline por mais de 2 minutos perdia o
- *     pedido, e o BEC tinha 2 minutos para ler um resultado. Agora comandos
- *     duráveis (logs, manutenção, atualização) valem TTL_COMANDO, e só o PinPad
- *     segue curto — um comando de PinPad entregue 10 minutos depois não serve
- *     para nada, é melhor que expire.
+ * Ao mexer neste arquivo, a pergunta a fazer sobre qualquer linha nova é
+ * "quantas operações de KV isso adiciona ao poll ocioso?". A resposta precisa
+ * continuar sendo zero.
+ * ---------------------------------------------------------------------------
  *
- *  5. AUTENTICAÇÃO À PROVA DE ESQUECIMENTO.
- *     Antes, `if (token && ...)`: sem a variável TOKEN configurada, o relay
- *     ficava ABERTO. Agora, sem TOKEN ele recusa tudo com 503 — falha visível
- *     em vez de silenciosamente público.
+ * O contrato HTTP é o mesmo das versões anteriores — mesmos caminhos, métodos e
+ * formatos de resposta —, então BEC e agentes já instalados funcionam sem
+ * atualização e a troca não precisa ser sincronizada.
  *
- *  6. GET /fila/<loja>/<pdv> — endpoint só de leitura para diagnóstico, mostra
- *     quantos itens estão na fila e quais estão reservados.
- *
- * Limitação que permanece: o KV é eventualmente consistente, então um item
- * recém-gravado pode levar um instante para aparecer na listagem. Na prática o
- * agente busca a cada 2s e pega no ciclo seguinte. Se um dia isso incomodar, o
- * caminho é migrar a fila para Durable Objects, que dá consistência forte.
+ * Comportamento da fila:
+ *  - vários pedidos podem esperar ao mesmo tempo, entregues na ordem de chegada
+ *  - o item entregue fica reservado por LEASE_TTL, para um pedido demorado não
+ *    segurar os que vieram depois; se o agente morrer, a reserva expira e o item
+ *    volta a ser entregue
+ *  - POST /resultado/<pid> remove exatamente aquele item
  */
 
 // Validade dos itens. O mínimo aceito pelo KV é 60s.
@@ -63,13 +50,38 @@ const TTL_PINPAD  = 120;   // 2 min  — comando velho de PinPad não serve mais
 const TTL_RESULTO = 900;   // 15 min — janela do BEC para ler o resultado
 const LEASE_TTL   = 600;   // 10 min de reserva por item entregue
 
-// Teto de chaves examinadas em um GET /pendente, para o polling continuar barato
-// mesmo se a fila crescer muito.
-const MAX_VARRIDURA = 25;
-
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request));
 });
+
+const agora = () => Math.floor(Date.now() / 1000);
+const chaveFila = (loja, pdv) => 'fila:' + loja + ':' + pdv;
+
+async function lerIndice(loja, pdv) {
+  const bruto = await KV.get(chaveFila(loja, pdv));
+  if (!bruto) return [];
+  try {
+    const lista = JSON.parse(bruto);
+    return Array.isArray(lista) ? lista : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function gravarIndice(loja, pdv, itens) {
+  if (itens.length === 0) {
+    await KV.delete(chaveFila(loja, pdv));
+    return;
+  }
+  await KV.put(chaveFila(loja, pdv), JSON.stringify(itens), { expirationTtl: TTL_COMANDO });
+}
+
+// Descarta o que já expirou. O corpo do item some sozinho pelo TTL do KV, mas a
+// entrada no índice ficaria para trás — sem list, é aqui que ela é limpa.
+function podar(itens) {
+  const t = agora();
+  return itens.filter(i => i && i.exp > t);
+}
 
 async function handleRequest(request) {
   const url   = new URL(request.url);
@@ -85,14 +97,16 @@ async function handleRequest(request) {
     return jsonResp({ erro: 'Não autorizado' }, 401);
   }
 
-  // GET /status — health check
+  // GET /status — health check. Não toca no KV de propósito: serve para saber se
+  // o relay responde mesmo quando a cota do KV estourou.
   if (request.method === 'GET' && path === '/status') {
     return jsonResp({ ok: true, ts: new Date().toISOString() });
   }
 
   // POST /comando/:loja/:pdv — BEC enfileira um pedido para o agente
   if (request.method === 'POST' && /^\/comando\/[^/]+\/[^/]+$/.test(path)) {
-    const [, , loja, pdv] = path.split('/');
+    const partes = path.split('/');
+    const loja = partes[2], pdv = partes[3];
     const body = await request.text();
 
     let dados = {};
@@ -102,50 +116,72 @@ async function handleRequest(request) {
     const ehPinpad = !dados.tipo || dados.tipo === 'pinpad';
     const ttl = ehPinpad ? TTL_PINPAD : TTL_COMANDO;
 
-    // Chave por item: o timestamp com zeros à esquerda faz a ordem lexicográfica
-    // coincidir com a cronológica, e o sufixo aleatório evita colisão entre dois
-    // POSTs no mesmo milissegundo.
-    const chave = `cmd:${loja}:${pdv}:${String(Date.now()).padStart(13, '0')}:${sufixo()}`;
-    await KV.put(chave, body, { expirationTtl: ttl });
+    const k = 'cmd:' + loja + ':' + pdv + ':' + String(Date.now()).padStart(13, '0') + ':' + sufixo();
+    await KV.put(k, body, { expirationTtl: ttl });
+
+    const itens = podar(await lerIndice(loja, pdv));
+    itens.push({
+      k: k,
+      pid: dados.pid || '',
+      tipo: dados.tipo || 'pinpad',
+      exp: agora() + ttl,
+      lease: 0,
+    });
+    await gravarIndice(loja, pdv, itens);
 
     // O PID aponta para a chave exata, para o ack remover só este item.
     if (dados.pid) {
-      await KV.put('pid:' + dados.pid, chave, { expirationTtl: ttl });
+      await KV.put('pid:' + dados.pid, loja + '|' + pdv + '|' + k, { expirationTtl: ttl });
     }
     return jsonResp({ ok: true });
   }
 
-  // GET /pendente/:loja/:pdv — agente busca o próximo pedido (poll a cada 2s)
+  // GET /pendente/:loja/:pdv — agente busca o próximo pedido
+  //
+  // Caminho ocioso (o normal): UMA leitura do índice e 204. Sem escrita, sem
+  // listagem. É o que mantém o consumo dentro da cota.
   if (request.method === 'GET' && /^\/pendente\/[^/]+\/[^/]+$/.test(path)) {
-    const [, , loja, pdv] = path.split('/');
-    const lista = await KV.list({ prefix: `cmd:${loja}:${pdv}:`, limit: MAX_VARRIDURA });
+    const partes = path.split('/');
+    const loja = partes[2], pdv = partes[3];
 
-    for (const chaveInfo of lista.keys) {
-      const chave = chaveInfo.name;
+    const original = await lerIndice(loja, pdv);
+    if (original.length === 0) return new Response(null, { status: 204 });
 
-      // Item já entregue e ainda dentro da reserva: pula para o próximo, senão
-      // um pedido demorado seguraria todos os que vieram depois dele.
-      if (await KV.get('lease:' + chave)) continue;
+    const itens = podar(original);
+    const t = agora();
 
-      const valor = await KV.get(chave);
-      if (!valor) continue;  // expirou entre a listagem e a leitura
+    for (const item of itens) {
+      // Pula o que está reservado: um pedido demorado não pode segurar a fila.
+      if (item.lease && (t - item.lease) < LEASE_TTL) continue;
 
-      await KV.put('lease:' + chave, String(Date.now()), { expirationTtl: LEASE_TTL });
+      const valor = await KV.get(item.k);
+      if (!valor) { item.exp = 0; continue; }  // sumiu por TTL; poda abaixo
+
+      item.lease = t;
+      await gravarIndice(loja, pdv, podar(itens));
       return new Response(valor, { headers: { 'Content-Type': 'application/json' } });
     }
+
+    // Nada entregável. Só grava se a poda mudou algo, para não gastar escrita em
+    // poll ocioso.
+    const limpo = podar(itens);
+    if (limpo.length !== original.length) await gravarIndice(loja, pdv, limpo);
     return new Response(null, { status: 204 });
   }
 
-  // POST /resultado/:pid — agente devolve o resultado e libera o item
+  // POST /resultado/:pid — agente devolve o resultado e libera aquele item
   if (request.method === 'POST' && /^\/resultado\/[^/]+$/.test(path)) {
     const pid  = path.split('/')[2];
     const body = await request.text();
 
-    const chave = await KV.get('pid:' + pid);
-    if (chave) {
-      await KV.delete(chave);
-      await KV.delete('lease:' + chave);
+    const ref = await KV.get('pid:' + pid);
+    if (ref) {
+      const p = ref.split('|');
+      const loja = p[0], pdv = p[1], k = p[2];
+      await KV.delete(k);
       await KV.delete('pid:' + pid);
+      const itens = podar(await lerIndice(loja, pdv)).filter(i => i.k !== k);
+      await gravarIndice(loja, pdv, itens);
     }
     await KV.put('res:' + pid, body, { expirationTtl: TTL_RESULTO });
     return jsonResp({ ok: true });
@@ -162,24 +198,18 @@ async function handleRequest(request) {
     return new Response(null, { status: 204 });
   }
 
-  // GET /fila/:loja/:pdv — diagnóstico: o que está na fila deste agente
+  // GET /fila/:loja/:pdv — diagnóstico. Lê o índice; também não lista.
   if (request.method === 'GET' && /^\/fila\/[^/]+\/[^/]+$/.test(path)) {
-    const [, , loja, pdv] = path.split('/');
-    const lista = await KV.list({ prefix: `cmd:${loja}:${pdv}:`, limit: MAX_VARRIDURA });
-
-    const itens = [];
-    for (const chaveInfo of lista.keys) {
-      const chave = chaveInfo.name;
-      const reservado = !!(await KV.get('lease:' + chave));
-      let tipo = '?', pid = '?';
-      try {
-        const d = JSON.parse(await KV.get(chave) || '{}');
-        tipo = d.tipo || 'pinpad';
-        pid  = d.pid  || '?';
-      } catch (_) {}
-      itens.push({ pid, tipo, reservado, chave });
-    }
-    return jsonResp({ total: itens.length, itens });
+    const partes = path.split('/');
+    const loja = partes[2], pdv = partes[3];
+    const t = agora();
+    const itens = podar(await lerIndice(loja, pdv)).map(i => ({
+      pid: i.pid,
+      tipo: i.tipo,
+      reservado: !!(i.lease && (t - i.lease) < LEASE_TTL),
+      expiraEm: Math.max(0, i.exp - t),
+    }));
+    return jsonResp({ total: itens.length, itens: itens });
   }
 
   return jsonResp({ erro: 'Rota não encontrada' }, 404);

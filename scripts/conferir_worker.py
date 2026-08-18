@@ -89,15 +89,35 @@ checar(re.search(r'if\s*\(\s*!token\s*\)', src) is not None,
        'recusa tudo quando TOKEN nao esta configurado (falha fechada)')
 checar('padStart(13' in src,
        'chave por item (fila real, sem sobrescrever o item anterior)')
+checar('fila:' in src,
+       'fila indexada em uma chave por agente')
 checar(re.search(r"KV\.get\('pid:'\s*\+\s*pid\)", src) is not None,
        'ack localiza a chave exata pelo PID')
-checar('lease:' in src,
+checar('lease' in src,
        'reserva de entrega, para item lento nao travar a fila')
-checar(src.count('KV.list(') >= 1, 'usa KV.list para varrer a fila')
+
 
 # O bug do no-op da versao anterior nao pode voltar
 checar(".replace(':', ':')" not in src,
        "sem o replace(':', ':') que nao fazia nada")
+
+print()
+print('Custo de KV — o agente busca a cada poucos segundos, entao o poll ocioso')
+print('e multiplicado por dezenas de milhares por dia:')
+
+# Chamadas reais de KV.list (mencoes em comentario nao contam)
+linhas_codigo = [l for l in src.splitlines()
+                 if 'KV.list' in l and not l.strip().startswith('*') and not l.strip().startswith('//')]
+checar(len(linhas_codigo) == 0,
+       'nenhuma chamada a KV.list (limite free e de 1.000/dia)',
+       f'{len(linhas_codigo)} chamada(s): {linhas_codigo}')
+
+# O caminho ocioso precisa sair com uma unica leitura
+trecho_pendente = src.split("/pendente/:loja/:pdv")[-1].split('POST /resultado')[0]
+checar('if (original.length === 0) return new Response(null, { status: 204 });' in trecho_pendente,
+       'fila vazia sai com 1 leitura, sem escrita')
+checar('limpo.length !== original.length' in trecho_pendente,
+       'so grava o indice quando a poda mudou algo (nao gasta escrita a toa)')
 
 print()
 print('Validades declaradas:')
