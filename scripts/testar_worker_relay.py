@@ -70,8 +70,17 @@ def ack(pid):
 
 
 def limpar():
-    """Consome tudo o que estiver na fila, respondendo cada item."""
-    for _ in range(40):
+    """Consome tudo o que estiver na fila, inclusive o que esta reservado.
+
+    O GET /pendente pula item reservado, entao drenar so com GET deixa para tras
+    tudo o que foi lido e nao respondido. A lista completa vem do /fila.
+    """
+    st, fila = relay('GET', f'/fila/{LOJA}/{PDV}')
+    if st == 200 and fila:
+        for item in fila.get('itens', []):
+            if item.get('pid'):
+                ack(item['pid'])
+    for _ in range(10):
         st, item = relay('GET', FILA)
         if st != 200 or not item:
             break
@@ -96,7 +105,14 @@ print('1. FILA NAO PODE SOBRESCREVER (era o defeito principal)')
 print('=' * 70)
 print('  Enfileira tres pedidos sem responder nenhum. Na versao antiga so o')
 print('  ultimo sobrevivia; os dois primeiros eram perdidos sem erro.')
-pids = ['ACC0000001', 'ACC0000002', 'ACC0000003']
+# PIDs unicos por execucao: o resultado de um ack fica legivel por 15 min, entao
+# PID fixo faria a execucao seguinte encontrar o resultado da anterior e concluir
+# que um pedido foi respondido quando nao foi.
+import random
+import string
+_run = ''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(4))
+pids = [f'ACC{_run}{n}' for n in (1, 2, 3)]
+print(f'  PIDs desta execucao: {pids}')
 for p in pids:
     st, _ = enfileirar(p)
     checar(st in (200, 201), f'POST do pedido {p}', f'HTTP {st}')

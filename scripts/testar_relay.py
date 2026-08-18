@@ -76,13 +76,25 @@ def relay(metodo, endpoint, payload=None):
 
 
 def drenar():
-    """Esvazia a fila ficticia.
+    """Esvazia a fila ficticia, inclusive o que esta reservado.
 
-    Atencao a semantica do relay: o GET /pendente apenas LE o item — quem o
-    descarta e o POST /resultado/<pid>. Drenar so com GET faz o mesmo item voltar
-    para sempre. E por isso que o agente reserva o PID enquanto extrai os logs.
+    Duas particularidades do relay tornam isso menos obvio do que parece:
+      - o GET /pendente apenas LE o item; quem o descarta e o POST /resultado
+      - o item lido fica RESERVADO por 10 min e desaparece dos GETs seguintes
+
+    Drenar so com GET, portanto, deixa para tras tudo o que este teste leu e nao
+    respondeu — e a proxima execucao encontraria a fila suja. Por isso a lista vem
+    do /fila, que mostra tambem os reservados, e cada PID e respondido.
     """
-    for _ in range(30):
+    status, fila = relay('GET', f'/fila/{LOJA_FICTICIA}/{PDV_FICTICIO}')
+    if status == 200 and fila:
+        for item in fila.get('itens', []):
+            pid_item = item.get('pid')
+            if pid_item:
+                relay('POST', f'/resultado/{pid_item}',
+                      {'sucesso': True, 'mensagem': 'drenagem de teste'})
+    # Rede de seguranca para item sem PID, que o ack nao alcanca
+    for _ in range(10):
         status, item = relay('GET', f'/pendente/{LOJA_FICTICIA}/{PDV_FICTICIO}')
         if status != 200 or not item:
             break

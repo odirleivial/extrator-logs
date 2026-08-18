@@ -285,6 +285,9 @@ checar(resp.data == zip_bytes, 'conteudo entregue e identico ao gerado',
 disp = resp.headers.get('Content-Disposition', '')
 checar('attachment' in disp and meta['arquivo'] in disp,
        'vai como anexo com o nome certo', disp)
+# O send_file mantem o arquivo aberto enquanto a resposta viver; sem fechar, a
+# limpeza no fim do teste falha no Windows com "arquivo em uso".
+resp.close()
 
 st, _ = relay('GET', f'/arquivo/{pid}')
 checar(st == 404, 'arquivo removido do R2 apos o download (nao ocupa espaco)', f'HTTP {st}')
@@ -294,9 +297,15 @@ print('=' * 70)
 print('6. LIMPEZA')
 print('=' * 70)
 for caminho in (tmp, os.path.join(RAIZ, 'output', meta['arquivo'])):
-    if os.path.exists(caminho):
+    if not os.path.exists(caminho):
+        continue
+    try:
         os.remove(caminho)
         print(f'  removido {os.path.basename(caminho)}')
+    except OSError as e:
+        # Nao e falha do teste: o arquivo baixado fica em output/ de proposito,
+        # igual ao Exportar Oracle.
+        print(f'  {os.path.basename(caminho)} ficou em output/ ({e.__class__.__name__})')
 for _ in range(20):
     s_, it = relay('GET', f'/pendente/{LOJA}/{PDV}')
     if s_ != 200 or not it:
