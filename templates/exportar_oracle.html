@@ -113,6 +113,119 @@
             cursor: pointer;
             margin: 0;
         }
+
+        .subtabs-nav {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+
+        .subtabs-nav button {
+            background: none;
+            border: none;
+            padding: 10px 18px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #6b7280;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+        }
+
+        .subtabs-nav button:hover {
+            color: #4a90e2;
+        }
+
+        .subtabs-nav button.ativo {
+            color: #4a90e2;
+            border-bottom-color: #4a90e2;
+        }
+
+        .subtab-panel {
+            display: none;
+        }
+
+        .subtab-panel.ativo {
+            display: block;
+        }
+
+        .sql-textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-family: Consolas, monospace;
+            font-size: 0.9rem;
+            box-sizing: border-box;
+            resize: vertical;
+            margin-bottom: 20px;
+        }
+
+        .campo-simples {
+            display: flex;
+            flex-direction: column;
+            max-width: 420px;
+            margin-bottom: 20px;
+        }
+
+        .campo-simples label {
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #4a90e2;
+        }
+
+        .campo-simples select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .explain-preview {
+            max-width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+
+        .cabecalho-oracle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .cabecalho-oracle h2 {
+            margin: 0;
+        }
+
+        .campo-conexao {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .campo-conexao label {
+            display: inline;
+            margin: 0;
+            font-weight: 600;
+            color: #4a90e2;
+            white-space: nowrap;
+            line-height: 30px;
+        }
+
+        .campo-conexao select {
+            height: 30px;
+            padding: 0 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            line-height: 28px;
+            min-width: 180px;
+        }
     </style>
     <script>
         var config = {{ config_props | tojson | safe }};
@@ -196,6 +309,11 @@
             });
         }
 
+        function obterConexaoSelecionada() {
+            var select = document.getElementById("conexao_oracle");
+            return select ? select.value : "";
+        }
+
         function coletarParametros() {
             const loja = document.getElementById("filtro_loja").value;
             const pdv = document.getElementById("filtro_pdv").value;
@@ -206,8 +324,9 @@
             const compactar = document.querySelector('input[name="compactar"]:checked').value;
             const checkboxes = document.querySelectorAll('input[name="consultas"]:checked');
             const consultas = Array.from(checkboxes).map(cb => cb.value);
+            const conexao = obterConexaoSelecionada();
 
-            return { loja, pdv, nsu, data, formato, separador, compactar, consultas };
+            return { loja, pdv, nsu, data, formato, separador, compactar, consultas, conexao };
         }
 
         function montarBody(p) {
@@ -218,7 +337,8 @@
                    '&data=' + encodeURIComponent(p.data) +
                    '&formato=' + encodeURIComponent(p.formato) +
                    '&separador=' + encodeURIComponent(p.separador) +
-                   '&compactar=' + encodeURIComponent(p.compactar);
+                   '&compactar=' + encodeURIComponent(p.compactar) +
+                   '&conexao=' + encodeURIComponent(p.conexao);
         }
 
         function enviarPorEmail() {
@@ -301,17 +421,222 @@
             populaLojas();
             populaPdvs();
             populaConsultas();
-            
+
             document.getElementById("filtro_loja").addEventListener("change", function() {
                 populaPdvs();
             });
         });
+
+        // ===================== Sub-abas =====================
+        function mudarSubTab(nome, botao) {
+            document.querySelectorAll(".subtab-panel").forEach(function(p) { p.classList.remove("ativo"); });
+            document.querySelectorAll(".subtabs-nav button").forEach(function(b) { b.classList.remove("ativo"); });
+            document.getElementById("subtab-" + nome).classList.add("ativo");
+            botao.classList.add("ativo");
+            ocultarAlerta();
+        }
+
+        // ===================== Query Livre =====================
+        function coletarParametrosQueryLivre() {
+            const sql = document.getElementById("query_livre_sql").value.trim();
+            const formato = document.querySelector('input[name="ql_formato"]:checked').value;
+            const separador = document.querySelector('input[name="ql_separador"]:checked').value;
+            const compactar = document.querySelector('input[name="ql_compactar"]:checked').value;
+            const conexao = obterConexaoSelecionada();
+            return { sql, formato, separador, compactar, conexao };
+        }
+
+        function montarBodyQueryLivre(p) {
+            return 'sql=' + encodeURIComponent(p.sql) +
+                   '&formato=' + encodeURIComponent(p.formato) +
+                   '&separador=' + encodeURIComponent(p.separador) +
+                   '&compactar=' + encodeURIComponent(p.compactar) +
+                   '&conexao=' + encodeURIComponent(p.conexao);
+        }
+
+        function enviarQueryLivrePorEmail() {
+            const p = coletarParametrosQueryLivre();
+            const emailDestino = document.getElementById("email_destino_query_livre").value;
+
+            if (!p.sql) {
+                mostrarAlerta('Cole uma consulta SQL antes de enviar.', 'erro');
+                return;
+            }
+            if (!emailDestino) {
+                mostrarAlerta('Selecione um e-mail de destino.', 'erro');
+                return;
+            }
+            ocultarAlerta();
+
+            const body = montarBodyQueryLivre(p) + '&email_destino=' + encodeURIComponent(emailDestino);
+
+            fetch('/oracle_query_livre/email', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: body
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.sucesso) {
+                    mostrarAlerta(d.mensagem, 'sucesso');
+                } else {
+                    mostrarAlerta('Erro: ' + d.mensagem, 'erro');
+                }
+            })
+            .catch(e => {
+                console.error("Erro:", e);
+                mostrarAlerta('Erro: ' + e, 'erro');
+            });
+        }
+
+        function baixarQueryLivre() {
+            const p = coletarParametrosQueryLivre();
+
+            if (!p.sql) {
+                mostrarAlerta('Cole uma consulta SQL antes de baixar.', 'erro');
+                return;
+            }
+            ocultarAlerta();
+
+            fetch('/oracle_query_livre/gerar', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: montarBodyQueryLivre(p)
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (!d.sucesso) {
+                    mostrarAlerta('Erro: ' + d.mensagem, 'erro');
+                    return;
+                }
+                if (d.arquivos.length === 0) {
+                    mostrarAlerta(d.mensagem || 'A consulta não retornou dados. Nenhum arquivo foi gerado.', 'erro');
+                    return;
+                }
+                d.arquivos.forEach(function(nomeArquivo, indice) {
+                    setTimeout(function() {
+                        var iframe = document.createElement('iframe');
+                        iframe.style.display = 'none';
+                        iframe.src = '/oracle_export/baixar/' + encodeURIComponent(nomeArquivo);
+                        document.body.appendChild(iframe);
+                    }, indice * 400);
+                });
+                mostrarAlerta('Download iniciado (' + d.arquivos.length + ' arquivo(s)).', 'sucesso');
+            })
+            .catch(e => {
+                console.error("Erro:", e);
+                mostrarAlerta('Erro: ' + e, 'erro');
+            });
+        }
+
+        // ===================== Explain Plan =====================
+        function coletarParametrosExplainPlan() {
+            const sql = document.getElementById("explain_plan_sql").value.trim();
+            const formato = document.querySelector('input[name="ep_formato"]:checked').value;
+            const conexao = obterConexaoSelecionada();
+            return { sql, formato, conexao };
+        }
+
+        function montarBodyExplainPlan(p) {
+            return 'sql=' + encodeURIComponent(p.sql) + '&formato=' + encodeURIComponent(p.formato) +
+                   '&conexao=' + encodeURIComponent(p.conexao);
+        }
+
+        function enviarExplainPlanPorEmail() {
+            const p = coletarParametrosExplainPlan();
+            const emailDestino = document.getElementById("email_destino_explain_plan").value;
+
+            if (!p.sql) {
+                mostrarAlerta('Cole uma consulta SQL antes de enviar.', 'erro');
+                return;
+            }
+            if (!emailDestino) {
+                mostrarAlerta('Selecione um e-mail de destino.', 'erro');
+                return;
+            }
+            ocultarAlerta();
+
+            const body = montarBodyExplainPlan(p) + '&email_destino=' + encodeURIComponent(emailDestino);
+
+            fetch('/oracle_explain_plan/email', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: body
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.sucesso) {
+                    mostrarAlerta(d.mensagem, 'sucesso');
+                } else {
+                    mostrarAlerta('Erro: ' + d.mensagem, 'erro');
+                }
+            })
+            .catch(e => {
+                console.error("Erro:", e);
+                mostrarAlerta('Erro: ' + e, 'erro');
+            });
+        }
+
+        function baixarExplainPlan() {
+            const p = coletarParametrosExplainPlan();
+
+            if (!p.sql) {
+                mostrarAlerta('Cole uma consulta SQL antes de baixar.', 'erro');
+                return;
+            }
+            ocultarAlerta();
+
+            fetch('/oracle_explain_plan/gerar', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: montarBodyExplainPlan(p)
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (!d.sucesso) {
+                    mostrarAlerta('Erro: ' + d.mensagem, 'erro');
+                    return;
+                }
+                var iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                iframe.src = '/oracle_export/baixar/' + encodeURIComponent(d.arquivos[0]);
+                document.body.appendChild(iframe);
+                mostrarAlerta('Download iniciado.', 'sucesso');
+            })
+            .catch(e => {
+                console.error("Erro:", e);
+                mostrarAlerta('Erro: ' + e, 'erro');
+            });
+        }
     </script>
 </head>
 <body>
-    <h2>Exportar Dados Oracle</h2>
+    <div class="cabecalho-oracle">
+        <h2>Exportar Dados Oracle</h2>
+        <div class="campo-conexao">
+            <label for="conexao_oracle">Conexão Oracle:</label>
+            <select id="conexao_oracle" name="conexao_oracle">
+                {% set conexoes = config_props.get('oracle_connections', '').split(',') %}
+                {% for conexao in conexoes %}
+                    {% set conexao = conexao.strip() %}
+                    {% if conexao %}
+                    <option value="{{ conexao }}" {% if loop.first %}selected{% endif %}>{{ conexao }}</option>
+                    {% endif %}
+                {% endfor %}
+            </select>
+        </div>
+    </div>
     <div id="alerta" style="display:none;"></div>
-    
+
+    <div class="subtabs-nav">
+        <button type="button" class="ativo" onclick="mudarSubTab('consultas', this)">Consultas Pré-definidas</button>
+        <button type="button" onclick="mudarSubTab('query-livre', this)">Query Livre</button>
+        <button type="button" onclick="mudarSubTab('explain-plan', this)">Explain Plan</button>
+    </div>
+
+    <!-- ===================== Sub-aba: Consultas Pré-definidas ===================== -->
+    <div id="subtab-consultas" class="subtab-panel ativo">
+
     <!-- Filtros -->
     <div class="filtros-container">
         <div class="filtro-campo">
@@ -397,5 +722,107 @@
     <!-- Ações -->
     <button type="button" onclick="enviarPorEmail()" style="margin-bottom: 20px;">Enviar por E-mail</button>
     <button type="button" onclick="baixarArquivo()" style="margin-bottom: 20px;">Download</button>
+    </div>
+    <!-- ===================== /Sub-aba: Consultas Pré-definidas ===================== -->
+
+    <!-- ===================== Sub-aba: Query Livre ===================== -->
+    <div id="subtab-query-livre" class="subtab-panel">
+        <textarea id="query_livre_sql" class="sql-textarea" placeholder="Cole aqui a consulta SQL a ser executada..."></textarea>
+
+        <div class="opcoes-container">
+            <div class="opcoes-grupo">
+                <h4>Formato de Arquivo:</h4>
+                <div class="radio-opcoes">
+                    <label>
+                        <input type="radio" name="ql_formato" value="csv" checked>
+                        CSV
+                    </label>
+                    <label>
+                        <input type="radio" name="ql_formato" value="xlsx">
+                        XLSX
+                    </label>
+                </div>
+            </div>
+
+            <div class="opcoes-grupo">
+                <h4>Separador Decimal:</h4>
+                <div class="radio-opcoes">
+                    <label>
+                        <input type="radio" name="ql_separador" value="." checked>
+                        Ponto (.)
+                    </label>
+                    <label>
+                        <input type="radio" name="ql_separador" value=",">
+                        Vírgula (,)
+                    </label>
+                </div>
+            </div>
+
+            <div class="opcoes-grupo">
+                <h4>Compactar Arquivos:</h4>
+                <div class="radio-opcoes">
+                    <label>
+                        <input type="radio" name="ql_compactar" value="sim" checked>
+                        Sim (.zip)
+                    </label>
+                    <label>
+                        <input type="radio" name="ql_compactar" value="nao">
+                        Não
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <div class="campo-simples">
+            <label for="email_destino_query_livre">E-mail destino:</label>
+            <select id="email_destino_query_livre" name="email_destino_query_livre">
+                {% for email in emails %}
+                    {% if email %}
+                    <option value="{{ email }}" {% if loop.first %}selected{% endif %}>{{ email }}</option>
+                    {% endif %}
+                {% endfor %}
+            </select>
+        </div>
+
+        <button type="button" onclick="enviarQueryLivrePorEmail()" style="margin-bottom: 20px;">Enviar por E-mail</button>
+        <button type="button" onclick="baixarQueryLivre()" style="margin-bottom: 20px;">Download</button>
+    </div>
+    <!-- ===================== /Sub-aba: Query Livre ===================== -->
+
+    <!-- ===================== Sub-aba: Explain Plan ===================== -->
+    <div id="subtab-explain-plan" class="subtab-panel">
+        <textarea id="explain_plan_sql" class="sql-textarea" placeholder="Cole aqui a consulta SQL para gerar o Explain Plan..."></textarea>
+
+        <div class="opcoes-container" style="grid-template-columns: 1fr;">
+            <div class="opcoes-grupo">
+                <h4>Formato de Exportação:</h4>
+                <div class="radio-opcoes">
+                    <label>
+                        <input type="radio" name="ep_formato" value="png" checked>
+                        Imagem (PNG)
+                    </label>
+                    <label>
+                        <input type="radio" name="ep_formato" value="pdf">
+                        PDF
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <div class="campo-simples">
+            <label for="email_destino_explain_plan">E-mail destino:</label>
+            <select id="email_destino_explain_plan" name="email_destino_explain_plan">
+                {% for email in emails %}
+                    {% if email %}
+                    <option value="{{ email }}" {% if loop.first %}selected{% endif %}>{{ email }}</option>
+                    {% endif %}
+                {% endfor %}
+            </select>
+        </div>
+
+        <button type="button" onclick="enviarExplainPlanPorEmail()" style="margin-bottom: 20px;">Enviar por E-mail</button>
+        <button type="button" onclick="baixarExplainPlan()" style="margin-bottom: 20px;">Download</button>
+    </div>
+    <!-- ===================== /Sub-aba: Explain Plan ===================== -->
 </body>
 </html>

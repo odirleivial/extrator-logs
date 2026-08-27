@@ -43,6 +43,11 @@ a = Analysis(
         'openpyxl',
         'openpyxl.styles',
         'openpyxl.utils',
+        # Pillow (renderização do Explain Plan em PNG/PDF)
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageDraw',
+        'PIL.ImageFont',
         # Requisições HTTP
         'requests',
         'requests.adapters',
@@ -104,12 +109,17 @@ exe = EXE(
 )
 
 # UPX corrompe a extensão binária Rust da cryptography (_rust*.pyd) e as
-# DLLs do OpenSSL, causando o erro DPY-3016 no oracledb (thin mode).
+# DLLs do OpenSSL, causando o erro DPY-3016 no oracledb (thin mode). Pelo
+# mesmo motivo, exclui as extensões binárias do Pillow (usadas para gerar a
+# imagem/PDF do Explain Plan).
 UPX_EXCLUDE = [
     '_rust.pyd',
     '_cffi_backend*.pyd',
     'libcrypto*.dll',
     'libssl*.dll',
+    '_imaging.pyd',
+    '_imagingft.pyd',
+    '_imagingcms.pyd',
 ]
 
 coll = COLLECT(

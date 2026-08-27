@@ -6,6 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import oracledb, csv, subprocess
+from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 from logger import logger, USUARIO_WINDOWS
 import execucao
@@ -92,18 +93,40 @@ def ler_config_completo(*args):
     props.update(ler_properties(SECURE_FILE))
     return props
 
-def get_oracle_conn(props):
-    dsn = f"{props['oracle_host']}:{props['oracle_port']}/{props['oracle_service']}"
+def get_oracle_conn(props, nome_conexao=None):
+    """Conecta usando a conexão Oracle nomeada indicada (oracle_conn.<nome>.*).
+    Sem nome_conexao, usa a primeira conexão cadastrada em oracle_connections;
+    se nenhuma existir ainda, cai para os campos legados oracle_host/port/etc.
+    (compatibilidade com instalações que ainda não passaram pela migração)."""
+    if not nome_conexao:
+        nomes = [n.strip() for n in props.get('oracle_connections', '').split(',') if n.strip()]
+        nome_conexao = nomes[0] if nomes else None
+
+    if nome_conexao:
+        prefixo = f'oracle_conn.{nome_conexao}'
+        host = props.get(f'{prefixo}.host', '')
+        port = props.get(f'{prefixo}.port', '')
+        service = props.get(f'{prefixo}.service', '')
+        user = props.get(f'{prefixo}.user', '')
+        password = props.get(f'{prefixo}.password', '')
+        if not host:
+            raise ValueError(f"Conexão Oracle '{nome_conexao}' não encontrada ou incompleta")
+    else:
+        host = props.get('oracle_host', '')
+        port = props.get('oracle_port', '')
+        service = props.get('oracle_service', '')
+        user = props.get('oracle_user', '')
+        password = props.get('oracle_password', '')
+        if not host:
+            raise ValueError("Nenhuma conexão Oracle configurada")
+
+    dsn = f"{host}:{port}/{service}"
     try:
-        conn = oracledb.connect(
-            user=props['oracle_user'],
-            password=props['oracle_password'],
-            dsn=dsn
-        )
-        logger.debug(f"Conexão Oracle estabelecida: {dsn} (user={props['oracle_user']})")
+        conn = oracledb.connect(user=user, password=password, dsn=dsn)
+        logger.debug(f"Conexão Oracle estabelecida: {dsn} (user={user}, conexao={nome_conexao or '-'})")
         return conn
     except Exception as e:
-        logger.error(f"Erro ao conectar ao Oracle: {str(e)}")
+        logger.error(f"Erro ao conectar ao Oracle ({nome_conexao or 'padrão'}): {str(e)}")
         raise
 
 PROP_SECTIONS = [
@@ -134,8 +157,8 @@ PROP_SECTIONS = [
      lambda k: k == 'PARAMETROS_PDV'),
     ("# === APIs externas - metadados (a APIKEY fica em secure.properties) ===",
      lambda k: k.startswith('api.') or k == 'api_order'),
-    ("# === Oracle - consultas SQL disponíveis ===",
-     lambda k: k.startswith('oracle_query')),
+    ("# === Oracle - consultas SQL disponíveis e conexões cadastradas ===",
+     lambda k: k.startswith('oracle_query') or k == 'oracle_connections'),
 ]
 
 def salvar_properties(arquivo, props):
@@ -248,7 +271,95 @@ def salvar_secure_campos(arquivo, valores):
         raise
 
 
+def salvar_conexoes_oracle_secure(arquivo, conexoes):
+    """Atualiza as chaves oracle_conn.<nome>.* no secure.properties, preservando
+    todo o restante do arquivo. Reconstrói inteiramente o bloco de conexões a
+    partir de `conexoes` — nomes que não estiverem mais na lista somem do arquivo.
+
+    conexoes: dict {nome: {'host','port','service','user','password'}}. Em
+    'password', None mantém a senha já gravada para aquela conexão.
+    """
+    try:
+        linhas_preservadas = []
+        senhas_atuais = {}
+        if os.path.exists(arquivo):
+            with open(arquivo, 'r', encoding='utf-8') as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith('#') and '=' in stripped:
+                        chave, valor = stripped.split('=', 1)
+                        chave = chave.strip()
+                        if chave.startswith('oracle_conn.'):
+                            if chave.endswith('.password'):
+                                senhas_atuais[chave] = valor
+                            continue  # descarta — será reescrito
+                    linhas_preservadas.append(line.rstrip('\n'))
+
+        marcador = '# === Oracle - conexões'
+        linhas_preservadas = [l for l in linhas_preservadas if not l.strip().startswith(marcador)]
+        while linhas_preservadas and linhas_preservadas[-1].strip() == '':
+            linhas_preservadas.pop()
+
+        linhas = list(linhas_preservadas)
+        if conexoes:
+            linhas.append('')
+            linhas.append('# === Oracle - conexões (sensível) ===')
+            for nome in sorted(conexoes):
+                dados = conexoes[nome]
+                prefixo = f'oracle_conn.{nome}'
+                linhas.append(f'{prefixo}.host={dados.get("host", "")}')
+                linhas.append(f'{prefixo}.port={dados.get("port", "")}')
+                linhas.append(f'{prefixo}.service={dados.get("service", "")}')
+                linhas.append(f'{prefixo}.user={dados.get("user", "")}')
+                senha = dados.get('password')
+                if senha is None:
+                    senha = senhas_atuais.get(f'{prefixo}.password', '')
+                linhas.append(f'{prefixo}.password={senha}')
+
+        with open(arquivo, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(linhas) + '\n')
+        logger.info(f"Conexões Oracle salvas em {arquivo} ({len(conexoes)} conexão(ões))")
+    except Exception as e:
+        logger.error(f"Erro ao salvar conexões Oracle em {arquivo}: {str(e)}")
+        raise
+
+
+def garantir_conexao_oracle_padrao():
+    """Migra a conexão Oracle única legada (oracle_host/port/service/user/password)
+    para o novo esquema de múltiplas conexões nomeadas, na primeira execução após
+    a atualização. Não faz nada se oracle_connections já existir ou se não houver
+    nada configurado ainda."""
+    props_config = ler_properties(CONFIG_FILE)
+    if not props_config or props_config.get('oracle_connections'):
+        return
+    props_secure = ler_properties(SECURE_FILE)
+    host = props_secure.get('oracle_host', '')
+    if not host:
+        return
+
+    nome = (props_secure.get('oracle_service', '') or '').strip() or 'PADRAO'
+    # Grava primeiro o secure.properties (dados da conexão) e só depois marca a
+    # migração como concluída no config.properties. Nessa ordem, se a gravação do
+    # secure.properties falhar por qualquer motivo, oracle_connections não fica
+    # registrado e a migração é tentada de novo na próxima inicialização — em vez
+    # de ficar "concluída" com oracle_connections presente mas sem nenhum
+    # oracle_conn.<nome>.* correspondente.
+    salvar_conexoes_oracle_secure(SECURE_FILE, {
+        nome: {
+            'host': host,
+            'port': props_secure.get('oracle_port', ''),
+            'service': props_secure.get('oracle_service', ''),
+            'user': props_secure.get('oracle_user', ''),
+            'password': props_secure.get('oracle_password', ''),
+        }
+    })
+    props_config['oracle_connections'] = nome
+    salvar_properties(CONFIG_FILE, props_config)
+    logger.info(f"Conexão Oracle única migrada para múltiplas conexões nomeadas: '{nome}'")
+
+
 garantir_props_padrao()
+garantir_conexao_oracle_padrao()
 
 
 def converter_data_para_oracle(data_ddmmyyyy):
@@ -263,7 +374,7 @@ def converter_data_para_oracle(data_ddmmyyyy):
         logger.error(f"Erro ao converter data {data_ddmmyyyy}: {str(e)}")
         return data_ddmmyyyy
 
-def exportar_consulta_para_csv(nome_consulta, loja='', pdv='', nsu='', data='', formato='csv', separador='.'):
+def exportar_consulta_para_csv(nome_consulta, loja='', pdv='', nsu='', data='', formato='csv', separador='.', conexao=None):
     props = ler_config_completo()
     sql = props.get(f'oracle_query.{nome_consulta}')
     if not sql:
@@ -296,19 +407,19 @@ def exportar_consulta_para_csv(nome_consulta, loja='', pdv='', nsu='', data='', 
     caminho_arquivo = os.path.join(OUTPUT_DIR, f'{nome_consulta}_{ts}.{extensao}')
 
     try:
-        conn = get_oracle_conn(props)
+        conn = get_oracle_conn(props, conexao)
         cur = conn.cursor()
         cur.execute(sql)
         colunas = [d[0] for d in cur.description]
         dados = cur.fetchall()
-        
+
         if formato == 'xlsx':
             # Exportar para XLSX
             exportar_para_xlsx(caminho_arquivo, colunas, dados, separador)
         else:
             # Exportar para CSV
             exportar_para_csv(caminho_arquivo, colunas, dados, separador)
-        
+
         linhas = len(dados)
         cur.close()
         conn.close()
@@ -363,6 +474,29 @@ def exportar_para_csv(caminho, colunas, dados, separador='.'):
         raise
 
 
+_RE_DIGITOS = re.compile(r'^[+-]?\d+$')
+
+
+def _excel_precisa_ser_texto(valor):
+    """Detecta valores que o Excel corrompe se forem gravados como célula
+    numérica: strings com zero à esquerda (o zero some) ou inteiros com 16+
+    dígitos (o Excel guarda tudo em ponto flutuante de precisão dupla e
+    arredonda para notação científica, perdendo os dígitos finais — cartões,
+    NSU, documentos etc.). Nesses casos a célula deve ser gravada como texto."""
+    if isinstance(valor, bool):
+        return False
+    if isinstance(valor, str):
+        if not _RE_DIGITOS.match(valor):
+            return False
+        digitos = valor.lstrip('+-')
+        if len(digitos) > 1 and digitos[0] == '0':
+            return True
+        return len(digitos) >= 16
+    if isinstance(valor, int):
+        return abs(valor) >= 10 ** 15
+    return False
+
+
 def exportar_para_xlsx(caminho, colunas, dados, separador='.'):
     """Exporta dados para XLSX com separador decimal configurável e suporte a LOBs"""
     try:
@@ -406,8 +540,14 @@ def exportar_para_xlsx(caminho, colunas, dados, separador='.'):
                         valor = valor.decode('utf-8')
                     except:
                         valor = "[Dados binários]"
-                
-                if isinstance(valor, float):
+
+                if _excel_precisa_ser_texto(valor):
+                    # Zero à esquerda ou inteiro com 16+ dígitos (cartão, NSU,
+                    # documento...): grava como texto para o Excel não arredondar
+                    # em notação científica nem descartar o zero à esquerda.
+                    cell.value = str(valor)
+                    cell.number_format = '@'
+                elif isinstance(valor, float):
                     # Formatar número com separador decimal
                     if separador == ',':
                         cell.value = str(valor).replace('.', ',')
@@ -708,6 +848,38 @@ def config():
             props['oracle_query_names'] = ','.join(n for n in nomes if n != remover)
             props.pop(f'oracle_query.{remover}', None)
 
+        # Oracle – conexões (removida + editadas + nova). Senha em branco em uma
+        # conexão existente mantém a senha já gravada (salvar_conexoes_oracle_secure
+        # trata None como "manter").
+        conexoes_atuais = [n.strip() for n in props.get('oracle_connections', '').split(',') if n.strip()]
+        remover_conexao = request.form.get('remover_conexao_oracle', '').strip()
+        if remover_conexao:
+            conexoes_atuais = [n for n in conexoes_atuais if n != remover_conexao]
+
+        conexoes_oracle = {}
+        for nome in conexoes_atuais:
+            conexoes_oracle[nome] = {
+                'host': request.form.get(f'oracle_conn_host_{nome}', '').strip(),
+                'port': request.form.get(f'oracle_conn_port_{nome}', '').strip(),
+                'service': request.form.get(f'oracle_conn_service_{nome}', '').strip(),
+                'user': request.form.get(f'oracle_conn_user_{nome}', '').strip(),
+                'password': (request.form.get(f'oracle_conn_password_{nome}', '').strip() or None),
+            }
+
+        nome_nova_conexao = request.form.get('oracle_conn_name', '').strip()
+        if nome_nova_conexao and nome_nova_conexao not in conexoes_atuais:
+            conexoes_atuais.append(nome_nova_conexao)
+            conexoes_oracle[nome_nova_conexao] = {
+                'host': request.form.get('oracle_conn_host', '').strip(),
+                'port': request.form.get('oracle_conn_port', '').strip(),
+                'service': request.form.get('oracle_conn_service', '').strip(),
+                'user': request.form.get('oracle_conn_user', '').strip(),
+                'password': request.form.get('oracle_conn_password', '').strip(),
+            }
+
+        props['oracle_connections'] = ','.join(conexoes_atuais)
+        salvar_conexoes_oracle_secure(SECURE_FILE, conexoes_oracle)
+
         # APIs – reconstrói todas a partir do formulário (metadados no config, apikey no secure).
         # A ordem dos blocos no formulário (índices 0,1,2...) define a ordem do combobox.
         for k in [k for k in props if k.startswith('api.')]:
@@ -752,6 +924,20 @@ def config():
     # APIs — mescla config + secure para exibir a apikey (mascarada na tela) na manutenção
     apis = obter_apis(ler_config_completo())
 
+    # Oracle – conexões cadastradas (host/port/service/user na tela; a senha nunca
+    # é exibida, só se já há uma gravada, para orientar o preenchimento).
+    secure_props_oracle = ler_properties(SECURE_FILE)
+    oracle_conexoes = {}
+    for nome in converterParaArray(props.get('oracle_connections', '')):
+        prefixo = f'oracle_conn.{nome}'
+        oracle_conexoes[nome] = {
+            'host': secure_props_oracle.get(f'{prefixo}.host', ''),
+            'port': secure_props_oracle.get(f'{prefixo}.port', ''),
+            'service': secure_props_oracle.get(f'{prefixo}.service', ''),
+            'user': secure_props_oracle.get(f'{prefixo}.user', ''),
+            'preenchida': bool(secure_props_oracle.get(f'{prefixo}.password', '')),
+        }
+
     # Aba Administrador — valores do secure.properties. Os sensíveis não vão para
     # a tela: só informamos se já existe algo gravado, para orientar o preenchimento.
     admin_habilitado = props.get('admin_habilitado', 'false').strip().lower() == 'true'
@@ -775,6 +961,7 @@ def config():
         emails_destino_lista=emails_destino_lista,
         apis=apis,
         config_props=props,
+        oracle_conexoes=oracle_conexoes,
         admin_habilitado=admin_habilitado,
         secure_valores=secure_valores,
         agentes=obter_agentes(props) if admin_habilitado else [],
@@ -820,10 +1007,11 @@ def _parametros_oracle_export(form):
         'formato': form.get('formato', 'csv'),
         'separador': form.get('separador', '.'),
         'compactar': form.get('compactar', 'sim').lower() == 'sim',
+        'conexao': form.get('conexao', '').strip() or None,
     }
 
 
-def gerar_arquivos_oracle(consultas, loja, pdv, nsu, data, formato, separador, compactar):
+def gerar_arquivos_oracle(consultas, loja, pdv, nsu, data, formato, separador, compactar, conexao=None):
     """Gera os arquivos exportados do Oracle.
 
     Consultas que não retornam linhas não geram arquivo para envio/download (o arquivo
@@ -840,7 +1028,7 @@ def gerar_arquivos_oracle(consultas, loja, pdv, nsu, data, formato, separador, c
     caminhos_com_dados = []
 
     for nome_consulta in consultas:
-        caminho, linhas = exportar_consulta_para_csv(nome_consulta, loja, pdv, nsu, data, formato, separador)
+        caminho, linhas = exportar_consulta_para_csv(nome_consulta, loja, pdv, nsu, data, formato, separador, conexao)
         if linhas > 0:
             status_consultas.append({'nome': nome_consulta, 'linhas': linhas, 'status': 'ok'})
             caminhos_com_dados.append(caminho)
@@ -1107,6 +1295,586 @@ def montar_email_exportacao_oracle(params, status_consultas, caminhos_arquivos, 
         f"{anexo_txt}\n"
         f"{'=' * 60}"
         + linhas_txt
+    )
+
+    return corpo_txt, corpo_html
+
+
+# ===========================================================================
+# Query Livre — sub-aba de Exportar Dados Oracle que executa uma consulta SQL
+# arbitrária colada pelo usuário (sem os placeholders $LOJA/$PDV/$NSU/$DATA).
+# ===========================================================================
+
+def _parametros_query_livre(form):
+    sql = form.get('sql', '').strip()
+    if not sql:
+        raise ValueError("Informe uma consulta SQL")
+    return {
+        'sql': sql,
+        'formato': form.get('formato', 'csv'),
+        'separador': form.get('separador', '.'),
+        'compactar': form.get('compactar', 'sim').lower() == 'sim',
+        'conexao': form.get('conexao', '').strip() or None,
+    }
+
+
+def executar_query_livre(sql, formato='csv', separador='.', conexao=None):
+    """Executa uma consulta SQL arbitrária e exporta o resultado para CSV/XLSX.
+    Retorna (caminho, linhas)."""
+    sql_limpa = sql.strip().rstrip(';')
+    props = ler_config_completo()
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d%H%M%S')
+    extensao = 'xlsx' if formato == 'xlsx' else 'csv'
+    caminho_arquivo = os.path.join(OUTPUT_DIR, f'query_livre_{ts}.{extensao}')
+
+    try:
+        conn = get_oracle_conn(props, conexao)
+        cur = conn.cursor()
+        cur.execute(sql_limpa)
+        colunas = [d[0] for d in cur.description]
+        dados = cur.fetchall()
+
+        if formato == 'xlsx':
+            exportar_para_xlsx(caminho_arquivo, colunas, dados, separador)
+        else:
+            exportar_para_csv(caminho_arquivo, colunas, dados, separador)
+
+        linhas = len(dados)
+        cur.close()
+        conn.close()
+
+        logger.info(f"Query livre concluída: {caminho_arquivo} ({linhas} linhas)")
+        return caminho_arquivo, linhas
+    except Exception as e:
+        logger.error(f"Erro ao executar query livre: {str(e)}")
+        raise
+
+
+def gerar_arquivo_query_livre(sql, formato, separador, compactar, conexao=None):
+    """Executa a query livre e aplica a mesma regra de compactação/descarte de
+    resultado vazio usada em gerar_arquivos_oracle, para um único arquivo.
+    Retorna (caminhos_arquivos, linhas)."""
+    caminho, linhas = executar_query_livre(sql, formato, separador, conexao)
+
+    if linhas == 0:
+        logger.info("Query livre não retornou linhas; arquivo descartado")
+        try:
+            os.remove(caminho)
+        except OSError:
+            pass
+        return [], linhas
+
+    if compactar:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d%H%M%S')
+        nome_zip = os.path.join(OUTPUT_DIR, f'QueryLivre-{ts}.zip')
+        compactar_csvs([caminho], nome_zip)
+        return [nome_zip], linhas
+
+    return [caminho], linhas
+
+
+@app.route('/oracle_query_livre/gerar', methods=['POST'])
+def oracle_query_livre_gerar():
+    try:
+        params = _parametros_query_livre(request.form)
+    except ValueError as e:
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 400
+
+    try:
+        caminhos, linhas = gerar_arquivo_query_livre(**params)
+        if not caminhos:
+            return jsonify({
+                'sucesso': True, 'arquivos': [],
+                'mensagem': 'A consulta não retornou dados. Nenhum arquivo foi gerado.'
+            })
+        registrar_execucao(ler_config_completo(), 'Exportar Oracle - Query Livre - Download', detalhes={
+            'SQL': params['sql'][:500], 'Linhas': linhas, 'Formato': params['formato'],
+            'Arquivos': ', '.join(os.path.basename(c) for c in caminhos),
+        })
+        return jsonify({'sucesso': True, 'arquivos': [os.path.basename(c) for c in caminhos]})
+    except Exception as e:
+        logger.error(f"Erro na query livre: {str(e)}")
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 500
+
+
+@app.route('/oracle_query_livre/email', methods=['POST'])
+def oracle_query_livre_email():
+    email_destino = request.form.get('email_destino', '').strip()
+    if not email_destino:
+        return jsonify({'sucesso': False, 'mensagem': 'Selecione um e-mail de destino'}), 400
+
+    try:
+        params = _parametros_query_livre(request.form)
+    except ValueError as e:
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 400
+
+    try:
+        caminhos, linhas = gerar_arquivo_query_livre(**params)
+
+        props = ler_config_completo()
+        pid = gerar_pid()
+        corpo_txt, corpo_html = montar_email_query_livre(params['sql'], linhas, caminhos, pid)
+        assunto = f"[Query Livre Oracle][{pid}]"
+
+        enviar_email_com_anexos(
+            props.get('email_envio', ''), props.get('senha_envio', ''),
+            email_destino, assunto, corpo_txt, corpo_html, caminhos
+        )
+        logger.info(f"E-mail de query livre enviado para {email_destino} ({len(caminhos)} arquivo(s) anexado(s))")
+        registrar_execucao(props, 'Exportar Oracle - Query Livre - E-mail', pid, {
+            'SQL': params['sql'][:500], 'Linhas': linhas,
+            'Formato': params['formato'], 'Destino': email_destino,
+        })
+        return jsonify({'sucesso': True, 'mensagem': f'E-mail enviado com sucesso para {email_destino}!'})
+    except Exception as e:
+        logger.error(f"Erro ao enviar query livre por e-mail: {str(e)}")
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 500
+
+
+def montar_email_query_livre(sql, linhas, caminhos_arquivos, pid):
+    """Corpo texto/HTML do e-mail de Query Livre, no mesmo padrão visual dos
+    demais e-mails do sistema (cabeçalho azul + caixas de resumo)."""
+    agora_fmt = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+    sql_exibicao = sql if len(sql) <= 2000 else sql[:2000] + '...'
+    sql_html = (sql_exibicao.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+
+    if caminhos_arquivos:
+        nomes_anexos = ', '.join(os.path.basename(c) for c in caminhos_arquivos)
+        anexo_html = f"""<div style='background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:12px 16px'>
+      <p style='margin:0;font-size:12px;color:#0369a1'><strong>Anexo:</strong> {nomes_anexos}</p>
+    </div>"""
+        anexo_txt = f"Anexo: {nomes_anexos}"
+    else:
+        anexo_html = """<div style='background:#fff5f5;border:1px solid #fecaca;border-radius:6px;padding:12px 16px'>
+      <p style='margin:0;font-size:12px;color:#b91c1c'><strong>Nenhum arquivo anexado</strong> — a consulta não retornou dados.</p>
+    </div>"""
+        anexo_txt = "Nenhum arquivo anexado — a consulta não retornou dados."
+
+    corpo_html = f"""<!DOCTYPE html>
+<html><head><meta charset='utf-8'></head>
+<body style='margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif'>
+<table width='100%' cellpadding='0' cellspacing='0' style='background:#f3f4f6;padding:24px 0'>
+<tr><td align='center'>
+<table width='640' cellpadding='0' cellspacing='0' style='background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)'>
+
+  <tr><td style='background:#1e3a5f;padding:24px 28px'>
+    <p style='margin:0;color:#93c5fd;font-size:12px;text-transform:uppercase;letter-spacing:1px'>Backoffice Equipe QA</p>
+    <h1 style='margin:6px 0 0;color:#ffffff;font-size:20px'>Query Livre Oracle</h1>
+  </td></tr>
+
+  <tr><td style='padding:20px 28px 0'>
+    <table cellpadding='0' cellspacing='0' width='100%'>
+      <tr>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:30%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>Linhas</p>
+          <p style='margin:4px 0 0;font-size:18px;font-weight:bold;color:#1e3a5f'>{linhas}</p>
+        </td>
+        <td width='8'></td>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:66%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>PID</p>
+          <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:#1e3a5f;font-family:monospace'>{pid}</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <tr><td style='padding:16px 28px 0'>
+    <p style='margin:0 0 6px;font-size:11px;color:#6b7280;text-transform:uppercase'>Consulta</p>
+    <pre style='margin:0;padding:12px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;font-size:11px;color:#1e293b;white-space:pre-wrap;word-break:break-word;font-family:monospace'>{sql_html}</pre>
+  </td></tr>
+
+  <tr><td style='padding:16px 28px 24px'>
+    {anexo_html}
+  </td></tr>
+
+  <tr><td style='padding:14px 28px;background:#f8fafc;border-top:1px solid #e5e7eb'>
+    <p style='margin:0;font-size:11px;color:#9ca3af'>Gerado em {agora_fmt} &nbsp;|&nbsp; Backoffice Equipe QA</p>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body></html>"""
+
+    corpo_txt = (
+        f"Query Livre Oracle\n"
+        f"PID: {pid} | Linhas: {linhas}\n"
+        f"Consulta: {sql_exibicao}\n"
+        f"{anexo_txt}"
+    )
+
+    return corpo_txt, corpo_html
+
+
+# ===========================================================================
+# Explain Plan — sub-aba de Exportar Dados Oracle que gera uma imagem do plano
+# de execução de uma consulta, com um visual em árvore inspirado no Explain
+# Plan do Toad for Oracle (ícones coloridos por tipo de operação, indentação
+# hierárquica, colunas de Custo/Bytes/Cardinalidade e predicados de acesso/
+# filtro abaixo de cada passo).
+# ===========================================================================
+
+def obter_explain_plan(sql, conexao=None):
+    """Executa EXPLAIN PLAN para a consulta informada e retorna as linhas do
+    plano (lista de dicts), na ordem hierárquica do PLAN_TABLE."""
+    sql_limpa = sql.strip().rstrip(';')
+    props = ler_config_completo()
+    statement_id = f"BEC_{uuid.uuid4().hex[:16]}"
+
+    conn = get_oracle_conn(props, conexao)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"EXPLAIN PLAN SET STATEMENT_ID = '{statement_id}' FOR {sql_limpa}")
+        cur.execute("""
+            SELECT ID, PARENT_ID, DEPTH, OPERATION, OPTIONS, OBJECT_NAME, OBJECT_TYPE,
+                   COST, CARDINALITY, BYTES, ACCESS_PREDICATES, FILTER_PREDICATES
+            FROM PLAN_TABLE
+            WHERE STATEMENT_ID = :sid
+            ORDER BY ID
+        """, sid=statement_id)
+        colunas = [d[0] for d in cur.description]
+        linhas = [dict(zip(colunas, row)) for row in cur.fetchall()]
+        if not linhas:
+            raise ValueError("O Oracle não retornou nenhum passo de plano para essa consulta")
+        return linhas
+    finally:
+        try:
+            cur.execute("DELETE FROM PLAN_TABLE WHERE STATEMENT_ID = :sid", sid=statement_id)
+            conn.commit()
+        except Exception:
+            pass
+        cur.close()
+        conn.close()
+
+
+def _construir_arvore_plano(linhas):
+    """Monta a árvore ID/PARENT_ID do PLAN_TABLE em uma estrutura de nós com FILHOS."""
+    por_id = {l['ID']: dict(l, FILHOS=[]) for l in linhas}
+    raiz = None
+    for l in linhas:
+        pid = l['PARENT_ID']
+        if pid is None:
+            raiz = por_id[l['ID']]
+        elif pid in por_id:
+            por_id[pid]['FILHOS'].append(por_id[l['ID']])
+    return raiz
+
+
+def _achatar_arvore(no, eh_ultimo=True, nivel=0, pilha_conectores=None):
+    """Pre-order da árvore, devolvendo (no, nivel, eh_ultimo_filho, pilha_conectores)
+    — pilha_conectores[i] indica se o ancestral do nível i ainda precisa de uma
+    linha vertical de continuação (True = ele não era o último filho do pai dele)."""
+    if pilha_conectores is None:
+        pilha_conectores = []
+    resultado = [(no, nivel, eh_ultimo, list(pilha_conectores))]
+    filhos = no['FILHOS']
+    nova_pilha = pilha_conectores + [not eh_ultimo]
+    for i, filho in enumerate(filhos):
+        resultado += _achatar_arvore(filho, i == len(filhos) - 1, nivel + 1, nova_pilha)
+    return resultado
+
+
+def _icone_operacao(operacao):
+    """Cor + letra do ícone por categoria de operação, inspirado no esquema de
+    cores do Explain Plan do Toad (vermelho para acesso a tabela/índice, azul
+    para joins, roxo para ordenação, verde para views)."""
+    op = (operacao or '').upper()
+    if 'TABLE ACCESS' in op:
+        return '#d85a30', 'T'
+    if 'INDEX' in op:
+        return '#d85a30', 'I'
+    if 'HASH JOIN' in op:
+        return '#185fa5', 'H'
+    if 'NESTED LOOPS' in op:
+        return '#185fa5', 'N'
+    if 'MERGE JOIN' in op:
+        return '#185fa5', 'M'
+    if 'SORT' in op:
+        return '#534ab7', 'S'
+    if 'VIEW' in op:
+        return '#3b6d11', 'V'
+    if 'STATISTICS COLLECTOR' in op:
+        return '#185fa5', 'C'
+    if 'SELECT STATEMENT' in op or 'INSERT' in op or 'UPDATE' in op or 'DELETE' in op:
+        return '#1e3a5f', 'Q'
+    return '#6b7280', '\u2022'
+
+
+def _carregar_fonte(nome_arquivo, tamanho):
+    caminho = os.path.join(os.environ.get('WINDIR', 'C:\\Windows'), 'Fonts', nome_arquivo)
+    if os.path.exists(caminho):
+        try:
+            return ImageFont.truetype(caminho, tamanho)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
+def renderizar_explain_plan(linhas_plano):
+    """Desenha o plano de execução como uma árvore visual (PIL), inspirada no
+    Explain Plan do Toad for Oracle. Retorna uma imagem PIL."""
+    raiz = _construir_arvore_plano(linhas_plano)
+    if raiz is None:
+        raise ValueError("Não foi possível montar a árvore do plano de execução")
+
+    linhas_achatadas = _achatar_arvore(raiz)
+
+    fonte_titulo = _carregar_fonte('segoeuib.ttf', 20)
+    fonte_marca = _carregar_fonte('segoeui.ttf', 11)
+    fonte_label = _carregar_fonte('consola.ttf', 13)
+    fonte_label_bold = _carregar_fonte('consolab.ttf', 13)
+    fonte_pequena = _carregar_fonte('segoeui.ttf', 11)
+    fonte_metrica = _carregar_fonte('consola.ttf', 12)
+    fonte_col_header = _carregar_fonte('segoeuib.ttf', 10)
+
+    LARGURA = 1400
+    ALTURA_LINHA = 34
+    ALTURA_PREDICADO = 17
+    MARGEM_ESQUERDA = 24
+    MARGEM_TOPO_ARVORE = 96
+    COL_CONECTOR = 22
+    ICONE_RAIO = 8
+    COL_METRICAS_LARGURA = 330
+    COR_LINHA = '#c7ccd4'
+
+    total_predicados = sum(
+        bool(no.get('ACCESS_PREDICATES')) + bool(no.get('FILTER_PREDICATES'))
+        for no, _, _, _ in linhas_achatadas
+    )
+    altura_arvore = len(linhas_achatadas) * ALTURA_LINHA + total_predicados * ALTURA_PREDICADO
+    ALTURA = MARGEM_TOPO_ARVORE + altura_arvore + 56
+
+    img = Image.new('RGB', (LARGURA, ALTURA), '#ffffff')
+    draw = ImageDraw.Draw(img)
+
+    # Cabeçalho
+    draw.rectangle([0, 0, LARGURA, 64], fill='#1e3a5f')
+    draw.text((MARGEM_ESQUERDA, 13), 'BACKOFFICE EQUIPE QA', font=fonte_marca, fill='#93c5fd')
+    draw.text((MARGEM_ESQUERDA, 29), 'Explain Plan', font=fonte_titulo, fill='#ffffff')
+
+    x_custo = LARGURA - COL_METRICAS_LARGURA
+    x_bytes = x_custo + 90
+    x_card = x_custo + 200
+    y_cab = 76
+    draw.text((x_custo, y_cab), 'CUSTO', font=fonte_col_header, fill='#6b7280')
+    draw.text((x_bytes, y_cab), 'BYTES', font=fonte_col_header, fill='#6b7280')
+    draw.text((x_card, y_cab), 'CARDINALIDADE', font=fonte_col_header, fill='#6b7280')
+    draw.line([(MARGEM_ESQUERDA, y_cab + 16), (LARGURA - MARGEM_ESQUERDA, y_cab + 16)], fill='#e5e7eb', width=1)
+
+    y = MARGEM_TOPO_ARVORE
+    for no, nivel, eh_ultimo, pilha in linhas_achatadas:
+        x_base = MARGEM_ESQUERDA + nivel * COL_CONECTOR
+        centro_y = y + ALTURA_LINHA // 2
+
+        if nivel == 0:
+            draw.rectangle([0, y, LARGURA, y + ALTURA_LINHA], fill='#fef9c3')
+
+        for i, precisa_linha in enumerate(pilha):
+            if precisa_linha:
+                xc = MARGEM_ESQUERDA + i * COL_CONECTOR
+                draw.line([(xc, y), (xc, y + ALTURA_LINHA)], fill=COR_LINHA, width=1)
+
+        if nivel > 0:
+            xc = x_base - COL_CONECTOR
+            draw.line([(xc, y), (xc, centro_y)], fill=COR_LINHA, width=1)
+            draw.line([(xc, centro_y), (x_base - 4, centro_y)], fill=COR_LINHA, width=1)
+            if not eh_ultimo:
+                draw.line([(xc, centro_y), (xc, y + ALTURA_LINHA)], fill=COR_LINHA, width=1)
+
+        cor, letra = _icone_operacao(no.get('OPERATION'))
+        icone_x = x_base + 4
+        draw.ellipse(
+            [icone_x, centro_y - ICONE_RAIO, icone_x + ICONE_RAIO * 2, centro_y + ICONE_RAIO],
+            fill=cor
+        )
+        draw.text((icone_x + ICONE_RAIO - 4, centro_y - 7), letra, font=fonte_pequena, fill='#ffffff')
+
+        texto_x = icone_x + ICONE_RAIO * 2 + 8
+        operacao = (no.get('OPERATION') or '').strip()
+        opcoes = (no.get('OPTIONS') or '').strip()
+        objeto = (no.get('OBJECT_NAME') or '').strip()
+        rotulo = f'{operacao} {opcoes}'.strip() if opcoes else operacao
+        draw.text((texto_x, y + 8), rotulo, font=fonte_label_bold, fill='#1e293b')
+        if objeto:
+            largura_rotulo = draw.textlength(rotulo, font=fonte_label_bold)
+            draw.text((texto_x + largura_rotulo + 10, y + 8), objeto, font=fonte_label, fill='#185fa5')
+
+        custo = no.get('COST')
+        bytes_ = no.get('BYTES')
+        card = no.get('CARDINALITY')
+        draw.text((x_custo, y + 8), str(custo) if custo is not None else '-', font=fonte_metrica, fill='#374151')
+        draw.text((x_bytes, y + 8), str(bytes_) if bytes_ is not None else '-', font=fonte_metrica, fill='#374151')
+        draw.text((x_card, y + 8), str(card) if card is not None else '-', font=fonte_metrica, fill='#374151')
+
+        y += ALTURA_LINHA
+
+        for chave, rotulo_pred in (('ACCESS_PREDICATES', 'Access Predicates'), ('FILTER_PREDICATES', 'Filter Predicates')):
+            valor = no.get(chave)
+            if valor:
+                texto_pred = f'{rotulo_pred}: {valor}'
+                if len(texto_pred) > 165:
+                    texto_pred = texto_pred[:162] + '...'
+                draw.text((texto_x, y), texto_pred, font=fonte_pequena, fill='#9ca3af')
+                y += ALTURA_PREDICADO
+
+    agora_fmt = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+    draw.line([(0, ALTURA - 38), (LARGURA, ALTURA - 38)], fill='#e5e7eb', width=1)
+    draw.text((MARGEM_ESQUERDA, ALTURA - 28), f'Gerado em {agora_fmt}  |  Backoffice Equipe QA', font=fonte_pequena, fill='#9ca3af')
+
+    return img
+
+
+def gerar_explain_plan(sql, formato, conexao=None):
+    """Gera a imagem/PDF do plano de execução da consulta informada.
+    Retorna (caminho, numero_de_passos)."""
+    if not sql or not sql.strip():
+        raise ValueError("Informe uma consulta SQL")
+
+    linhas_plano = obter_explain_plan(sql, conexao)
+    imagem = renderizar_explain_plan(linhas_plano)
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d%H%M%S')
+    extensao = 'pdf' if formato == 'pdf' else 'png'
+    caminho = os.path.join(OUTPUT_DIR, f'ExplainPlan_{ts}.{extensao}')
+
+    if formato == 'pdf':
+        imagem.convert('RGB').save(caminho, 'PDF', resolution=150.0)
+    else:
+        imagem.save(caminho, 'PNG')
+
+    logger.info(f"Explain plan gerado: {caminho} ({len(linhas_plano)} passo(s))")
+    return caminho, len(linhas_plano)
+
+
+def _parametros_explain_plan(form):
+    sql = form.get('sql', '').strip()
+    if not sql:
+        raise ValueError("Informe uma consulta SQL")
+    return {
+        'sql': sql,
+        'formato': form.get('formato', 'png'),
+        'conexao': form.get('conexao', '').strip() or None,
+    }
+
+
+@app.route('/oracle_explain_plan/gerar', methods=['POST'])
+def oracle_explain_plan_gerar():
+    try:
+        params = _parametros_explain_plan(request.form)
+    except ValueError as e:
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 400
+
+    try:
+        caminho, n_passos = gerar_explain_plan(**params)
+        registrar_execucao(ler_config_completo(), 'Exportar Oracle - Explain Plan - Download', detalhes={
+            'SQL': params['sql'][:500], 'Formato': params['formato'], 'Passos': n_passos,
+            'Arquivo': os.path.basename(caminho),
+        })
+        return jsonify({'sucesso': True, 'arquivos': [os.path.basename(caminho)]})
+    except Exception as e:
+        logger.error(f"Erro ao gerar explain plan: {str(e)}")
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 500
+
+
+@app.route('/oracle_explain_plan/email', methods=['POST'])
+def oracle_explain_plan_email():
+    email_destino = request.form.get('email_destino', '').strip()
+    if not email_destino:
+        return jsonify({'sucesso': False, 'mensagem': 'Selecione um e-mail de destino'}), 400
+
+    try:
+        params = _parametros_explain_plan(request.form)
+    except ValueError as e:
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 400
+
+    try:
+        caminho, n_passos = gerar_explain_plan(**params)
+
+        props = ler_config_completo()
+        pid = gerar_pid()
+        corpo_txt, corpo_html = montar_email_explain_plan(params['sql'], n_passos, caminho, pid)
+        assunto = f"[Explain Plan Oracle][{pid}]"
+
+        enviar_email_com_anexos(
+            props.get('email_envio', ''), props.get('senha_envio', ''),
+            email_destino, assunto, corpo_txt, corpo_html, [caminho]
+        )
+        logger.info(f"E-mail de explain plan enviado para {email_destino}")
+        registrar_execucao(props, 'Exportar Oracle - Explain Plan - E-mail', pid, {
+            'SQL': params['sql'][:500], 'Formato': params['formato'],
+            'Passos': n_passos, 'Destino': email_destino,
+        })
+        return jsonify({'sucesso': True, 'mensagem': f'E-mail enviado com sucesso para {email_destino}!'})
+    except Exception as e:
+        logger.error(f"Erro ao enviar explain plan por e-mail: {str(e)}")
+        return jsonify({'sucesso': False, 'mensagem': str(e)}), 500
+
+
+def montar_email_explain_plan(sql, n_passos, caminho_arquivo, pid):
+    """Corpo texto/HTML do e-mail de Explain Plan, no mesmo padrão visual dos
+    demais e-mails do sistema (cabeçalho azul + caixas de resumo)."""
+    agora_fmt = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+    nome_anexo = os.path.basename(caminho_arquivo)
+    sql_exibicao = sql if len(sql) <= 2000 else sql[:2000] + '...'
+    sql_html = (sql_exibicao.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+
+    corpo_html = f"""<!DOCTYPE html>
+<html><head><meta charset='utf-8'></head>
+<body style='margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif'>
+<table width='100%' cellpadding='0' cellspacing='0' style='background:#f3f4f6;padding:24px 0'>
+<tr><td align='center'>
+<table width='640' cellpadding='0' cellspacing='0' style='background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)'>
+
+  <tr><td style='background:#1e3a5f;padding:24px 28px'>
+    <p style='margin:0;color:#93c5fd;font-size:12px;text-transform:uppercase;letter-spacing:1px'>Backoffice Equipe QA</p>
+    <h1 style='margin:6px 0 0;color:#ffffff;font-size:20px'>Explain Plan Oracle</h1>
+  </td></tr>
+
+  <tr><td style='padding:20px 28px 0'>
+    <table cellpadding='0' cellspacing='0' width='100%'>
+      <tr>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:30%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>Passos</p>
+          <p style='margin:4px 0 0;font-size:18px;font-weight:bold;color:#1e3a5f'>{n_passos}</p>
+        </td>
+        <td width='8'></td>
+        <td style='padding:8px 12px;background:#f8fafc;border-radius:6px;text-align:center;width:66%'>
+          <p style='margin:0;font-size:11px;color:#6b7280;text-transform:uppercase'>PID</p>
+          <p style='margin:4px 0 0;font-size:14px;font-weight:bold;color:#1e3a5f;font-family:monospace'>{pid}</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <tr><td style='padding:16px 28px 0'>
+    <p style='margin:0 0 6px;font-size:11px;color:#6b7280;text-transform:uppercase'>Consulta</p>
+    <pre style='margin:0;padding:12px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;font-size:11px;color:#1e293b;white-space:pre-wrap;word-break:break-word;font-family:monospace'>{sql_html}</pre>
+  </td></tr>
+
+  <tr><td style='padding:16px 28px 24px'>
+    <div style='background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:12px 16px'>
+      <p style='margin:0;font-size:12px;color:#0369a1'><strong>Anexo:</strong> {nome_anexo}</p>
+    </div>
+  </td></tr>
+
+  <tr><td style='padding:14px 28px;background:#f8fafc;border-top:1px solid #e5e7eb'>
+    <p style='margin:0;font-size:11px;color:#9ca3af'>Gerado em {agora_fmt} &nbsp;|&nbsp; Backoffice Equipe QA</p>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body></html>"""
+
+    corpo_txt = (
+        f"Explain Plan Oracle\n"
+        f"PID: {pid} | Passos: {n_passos}\n"
+        f"Consulta: {sql_exibicao}\n"
+        f"Anexo: {nome_anexo}"
     )
 
     return corpo_txt, corpo_html

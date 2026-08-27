@@ -283,6 +283,7 @@
     <script>
         var config = {{ config_props | tojson | safe }};
         var apisConfig = {{ apis | tojson | safe }};
+        var oracleConexoes = {{ oracle_conexoes | tojson | safe }};
 
         function atualizarVisibilidadeTunnel() {
             var algumTunnel = document.querySelector('input[type="radio"][value="tunnel"]:checked');
@@ -409,6 +410,54 @@
             const input = document.createElement('input');
             input.type = 'hidden';
             input.name = 'remover_consulta';
+            input.value = nome;
+            document.getElementById('config_form').appendChild(input);
+            document.getElementById('config_form').submit();
+        }
+
+        // ===== Oracle: conexões =====
+        function carregarConexoesOracle() {
+            const container = document.getElementById('conexoes-oracle-container');
+            container.innerHTML = '';
+            converterParaArray(config['oracle_connections']).forEach(nome => {
+                const dados = oracleConexoes[nome] || {};
+                const div = document.createElement('div');
+                div.className = 'consulta-bloco';
+                div.innerHTML = `
+                    <h5>Conexão: ${escaparHtml(nome)}</h5>
+                    <div class="grid-2">
+                        <div class="field-group">
+                            <label>Host</label>
+                            <input type="text" name="oracle_conn_host_${nome}" value="${escaparHtml(dados.host || '')}">
+                        </div>
+                        <div class="field-group">
+                            <label>Porta</label>
+                            <input type="text" name="oracle_conn_port_${nome}" value="${escaparHtml(dados.port || '')}">
+                        </div>
+                        <div class="field-group">
+                            <label>Service name</label>
+                            <input type="text" name="oracle_conn_service_${nome}" value="${escaparHtml(dados.service || '')}">
+                        </div>
+                        <div class="field-group">
+                            <label>Usuário</label>
+                            <input type="text" name="oracle_conn_user_${nome}" value="${escaparHtml(dados.user || '')}">
+                        </div>
+                    </div>
+                    <div class="field-group">
+                        <label>Senha ${dados.preenchida ? '(já cadastrada — deixe em branco para manter)' : ''}</label>
+                        <input type="password" name="oracle_conn_password_${nome}" placeholder="${dados.preenchida ? 'Deixe em branco para manter' : ''}">
+                    </div>
+                    <button type="button" class="btn-danger" onclick="removerConexaoOracle('${nome}')">Remover</button>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        function removerConexaoOracle(nome) {
+            if (!confirm('Remover a conexão "' + nome + '"?')) return;
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'remover_conexao_oracle';
             input.value = nome;
             document.getElementById('config_form').appendChild(input);
             document.getElementById('config_form').submit();
@@ -570,6 +619,7 @@
 
         document.addEventListener('DOMContentLoaded', function() {
             carregarConsultas();
+            carregarConexoesOracle();
             carregarApis();
             document.querySelector('.cfg-tab').click();
 
@@ -844,6 +894,44 @@
 
         <!-- ======== SEÇÃO: ORACLE ======== -->
         <div id="sec-oracle" class="cfg-section">
+
+            <!-- Conexões -->
+            <div class="card">
+                <h4>Conexões</h4>
+                <small>Conexões Oracle disponíveis para as Consultas Pré-definidas, a Query Livre e o Explain Plan. A conexão usada em cada execução é escolhida no combobox no topo da tela <strong>Exportar Oracle</strong>.</small>
+                <div id="conexoes-oracle-container" style="margin-top:14px"></div>
+
+                <!-- Nova conexão -->
+                <div class="consulta-bloco" style="border-style: dashed; border-color: #4a90e2;">
+                    <h5>Nova conexão</h5>
+                    <div class="field-group">
+                        <label>Nome</label>
+                        <input type="text" name="oracle_conn_name" placeholder="Ex: QAS100">
+                    </div>
+                    <div class="grid-2">
+                        <div class="field-group">
+                            <label>Host</label>
+                            <input type="text" name="oracle_conn_host" placeholder="qas100.exemplo.int">
+                        </div>
+                        <div class="field-group">
+                            <label>Porta</label>
+                            <input type="text" name="oracle_conn_port" placeholder="1521">
+                        </div>
+                        <div class="field-group">
+                            <label>Service name</label>
+                            <input type="text" name="oracle_conn_service" placeholder="QAS100">
+                        </div>
+                        <div class="field-group">
+                            <label>Usuário</label>
+                            <input type="text" name="oracle_conn_user">
+                        </div>
+                    </div>
+                    <div class="field-group">
+                        <label>Senha</label>
+                        <input type="password" name="oracle_conn_password">
+                    </div>
+                </div>
+            </div>
 
             <!-- Consultas -->
             <div class="card">
